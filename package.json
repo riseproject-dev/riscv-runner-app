@@ -1,0 +1,10 @@
+{
+  "name": "rise-riscv-runner-app",
+  "version": "0.0.1",
+  "keywords": [],
+  "author": "",
+  "devDependencies": {
+    "serverless-scaleway-functions": "^0.4.16"
+  },
+  "description": ""
+}

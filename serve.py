@@ -1,0 +1,16 @@
+import logging
+from waitress import serve
+from handler import app
+
+# Set the logging level for all loggers to INFO
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)-8s %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+
+HOST = "0.0.0.0"
+PORT = 8080
+
+print(f"Starting server on http://{HOST}:{PORT}")
+serve(app, host=HOST, port=PORT)

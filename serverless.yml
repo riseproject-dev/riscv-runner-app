@@ -1,0 +1,28 @@
+service: rise-riscv-runner-app
+
+provider:
+  name: scaleway
+  scwRegion: ${env:SCW_REGION, "fr-par"}
+  scwProject: ${env:SCW_PROJECT, "03a2e06e-e7c1-45a6-9f05-775d813c2e28"} # RISE - RISC-V Runner Github App
+  scwToken: ${env:SCW_SECRET_KEY}
+
+plugins:
+  - serverless-scaleway-functions
+
+package:
+  patterns:
+    - "!node_modules/**"
+    - "!.gitignore"
+    - "!.git/**"
+
+
+custom:
+  containers:
+    gh-webhook:
+      directory: .
+      port: 8080
+      memoryLimit: 128
+      cpuLimit: 100
+      secret:
+        GITHUB_WEBHOOK_SECRET: ${env:GITHUB_WEBHOOK_SECRET}
+        GITHUB_APP_PRIVATE_KEY: ${env:GITHUB_APP_PRIVATE_KEY}
