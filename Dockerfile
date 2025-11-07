@@ -9,7 +9,6 @@ RUN pip3 install --no-cache -r requirements.txt --target .
 ENV PATH="/app/bin:${PATH}"
 ENV PYTHONPATH="/app"
 
-COPY handler.py .
-COPY serve.py .
+COPY handler.py serve.py ./
 
 CMD [ "python3", "serve.py" ]

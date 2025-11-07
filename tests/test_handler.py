@@ -5,6 +5,8 @@ import jwt
 import json
 import pytest
 import requests
+from unittest.mock import patch, MagicMock
+import kubernetes
 
 from handler import (
     ALLOWED_ORGS,
@@ -13,6 +15,7 @@ from handler import (
     authorize_organization,
     authenticate_app_as_organization,
     create_runner_registration_token,
+    provision_runner,
     compute_signature,
 )
 
@@ -127,3 +130,50 @@ def test_create_runner_token(requests_mock):
     runner_token, err = create_runner_registration_token(payload, installation_token)
     assert err is None
     assert runner_token == "runner-token"
+
+@patch('handler.k8s.config.load_incluster_config')
+@patch('handler.k8s.client.CoreV1Api')
+def test_provision_runner_success(mock_core_v1_api, mock_load_incluster_config):
+    """Test successful runner provisioning."""
+    mock_api_instance = MagicMock()
+    mock_core_v1_api.return_value = mock_api_instance
+
+    runner_token = "test-runner-token"
+    payload = {
+        "repository": {"html_url": "https://github.com/test/repo"},
+        "workflow_job": {"id": 12345}
+    }
+    os.environ["K8S_NAMESPACE"] = "test-namespace"
+    os.environ["RUNNER_IMAGE"] = "test-runner-image:latest"
+    os.environ["K8S_API_SERVER"] = "test-k8s-api-server"
+    os.environ["K8S_API_TOKEN"] = "test-k8s-api-token"
+
+    _ = provision_runner(payload, runner_token)
+
+    mock_core_v1_api.assert_called_once()
+    mock_api_instance.create_namespaced_pod.assert_called_once()
+
+    # Verify pod manifest details
+    call_args = mock_api_instance.create_namespaced_pod.call_args
+    pod_manifest = call_args[1]['body']
+    assert pod_manifest['metadata']['name'].startswith('rise-riscv-runner-12345-')
+    assert pod_manifest['spec']['containers'][0]['image'] is not None
+    assert pod_manifest['spec']['containers'][0]['command'] is not None
+    assert pod_manifest['spec']['containers'][0]['args'] is not None
+    assert len(pod_manifest['spec']['containers'][0]['args']) > 0
+
+def test_provision_runner_config_exception():
+    """Test runner provisioning failure due to Kubernetes config error."""
+    if "K8S_API_SERVER" in os.environ: del os.environ["K8S_API_SERVER"]
+    if "K8S_API_TOKEN" in os.environ: del os.environ["K8S_API_TOKEN"]
+    with pytest.raises(kubernetes.config.ConfigException):
+        _ = provision_runner({}, "token")
+
+@patch('handler.k8s.client.CoreV1Api', side_effect=Exception("Test API Error"))
+def test_provision_runner_api_exception(mock_core_v1_api):
+    """Test runner provisioning failure due to a generic API error."""
+    os.environ["K8S_API_SERVER"] = "test-k8s-api-server"
+    os.environ["K8S_API_TOKEN"] = "test-k8s-api-token"
+    with pytest.raises(Exception) as excinfo:
+        _ = provision_runner({"repository": {"html_url": "url"}, "workflow_job": {"id": 1}}, "token")
+    assert "Test API Error" == str(excinfo.value)

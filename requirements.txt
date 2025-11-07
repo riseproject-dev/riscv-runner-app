@@ -1,6 +1,5 @@
 jwt
 kubernetes
-python-logging-loki
 requests
 waitress
 Flask==3.1.2

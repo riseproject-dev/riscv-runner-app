@@ -1,15 +1,12 @@
-
-import platform
-
-print(f"Current platform: {platform.platform()}")
-
 import hashlib
 import hmac
 import json
 import jwt
+import kubernetes as k8s
 import os
 import requests
 import sys
+import tempfile
 import time
 
 from flask import Flask, request, make_response
@@ -154,6 +151,60 @@ def create_runner_registration_token(payload, installation_token):
     else:
         return None, response.json().get("message", "Failed to create runner registration token")
 
+def load_k8s_config():
+    """Load Kubernetes configuration."""
+    # If not in a cluster, fall back to manual configuration from environment variables.
+    # This is an alternative to k8s.config.load_kube_config() which relies on a local file.
+    host = os.environ.get("K8S_API_SERVER")
+    token = os.environ.get("K8S_API_TOKEN")
+
+    if not host or not token:
+        raise k8s.config.ConfigException("K8s not configured: K8S_API_SERVER and K8S_API_TOKEN must be set when not running in-cluster.")
+
+    configuration = k8s.client.Configuration()
+    configuration.host = host
+    configuration.api_key_prefix['authorization'] = 'Bearer'
+    configuration.api_key['authorization'] = token
+    # In a real-world scenario, you would also handle TLS verification,
+    # possibly by loading a CA certificate from another env var.
+    # For simplicity here, we'll disable it, but this is not recommended for production.
+    configuration.verify_ssl = False
+
+    return configuration
+
+def provision_runner(payload, runner_token):
+    """Provision a new runner in a Kubernetes pod."""
+    with k8s.client.ApiClient(load_k8s_config()) as client:
+        api = k8s.client.CoreV1Api(client)
+
+        repo_url = payload.get("repository", {}).get("html_url")
+        if not repo_url:
+            raise Exception("Missing repository URL in payload")
+
+        pod_name = f"rise-riscv-runner-{payload.get('workflow_job', {}).get('id')}-{int(time.time())}"
+        namespace = os.environ.get("K8S_NAMESPACE", "default")
+        image = os.environ.get("RUNNER_IMAGE", "riscv64/debian@sha256:5d2913fff700bf597c720fa1385d13c858e536c211955acc59fa747952fc2cef") # Replace with your runner image
+
+        pod_manifest = {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {"name": pod_name},
+            "spec": {
+                "containers": [{
+                    "name": "runner",
+                    "image": image,
+                    "command": ["/bin/bash", "-c"],
+                    "args": [
+                        f"./config.sh --url {repo_url} --token {runner_token} --name {pod_name} --unattended --ephemeral && ./run.sh"
+                    ]
+                }],
+                "restartPolicy": "Never"
+            }
+        }
+
+        api.create_namespaced_pod(body=pod_manifest, namespace=namespace)
+        return f"Pod {pod_name} created successfully.", None
+
 @app.route("/", methods=['POST'])
 def webhook():
     body, err = check_webhook_signature(request.headers, request.get_data(as_text=True))
@@ -176,4 +227,8 @@ def webhook():
     if err:
         return make_response(err["body"], err["statusCode"])
 
-    return "Successfully authenticated and created runner token"
+    result, err = provision_runner(payload, runner_token)
+    if err:
+        return make_response(err["body"], err["statusCode"])
+
+    return result
