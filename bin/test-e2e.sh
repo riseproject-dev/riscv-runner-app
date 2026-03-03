@@ -1,6 +1,6 @@
 #!/bin/bash
 
-curl -i -X POST https://riseriscvrunnerappqdvknz9s-gh-webhook.functions.fnc.fr-par.scw.cloud \
+curl -i -X POST https://riseriscvrunnerappqdvknz9s-gh-webhook-staging.functions.fnc.fr-par.scw.cloud \
     -H "Accept: */*" \
     -H "Content-Type: application/json" \
     -H "User-Agent: GitHub-Hookshot/c012cf0" \
