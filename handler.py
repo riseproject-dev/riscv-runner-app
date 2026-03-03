@@ -35,6 +35,8 @@ ALLOWED_ORGS = {
     152654596, # riseproject-dev
 }
 
+VALID_JOB_LABELS = {"rise", "ubuntu-24.04-riscv"}
+
 RUNNER_GROUP_NAME = "RISE RISC-V Runners"
 
 def compute_signature(body, secret):
@@ -119,18 +121,49 @@ def check_required_labels(payload):
     """Check that the workflow job has the required runs-on labels."""
     job_labels = set(payload.get("workflow_job", {}).get("labels", []))
 
+    if any(label not in VALID_JOB_LABELS for label in job_labels):
+        logger.info("Ignoring job: contains unsupported labels (got %s)", sorted(job_labels))
+        raise WebhookError(200, "Ignoring job: contains unsupported labels.")
+
     if not "rise" in job_labels:
         logger.info("Ignoring job: missing required 'rise' label (got %s)", sorted(job_labels))
         raise WebhookError(200, "Ignoring job: missing required 'rise' label.")
 
-    if not any(label in job_labels for label in ["ubuntu-24.04-riscv"]):
+    if "ubuntu-24.04-riscv" in job_labels:
+        k8s_image = "cloudv10x/github-actions-riscv:docker-ubuntu-2.331.0"
+    # elif "ubuntu-26.04-riscv" in job_labels:
+    #     k8s_image = "cloudv10x/github-actions-riscv:docker-ubuntu-2.331.0"
+    else:
         logger.info("Ignoring job: missing required platform label (got %s)", sorted(job_labels))
         raise WebhookError(200, "Ignoring job: missing required platform label.")
 
-    # We want to support more labels like "rva23", or "rvv" in the future
-    k8s_labels = set()
+    SCW_EM_RV1_SPEC = {
+        "nodeSelector": {
+            "riseproject.dev/board": "scw-em-rv1",
+        },
+        "resources": {
+            "requests": {
+                "cpu": "3000m", # The EM-RV1 board has 4 cores, but we leave some headroom for the kube-flannel and kube-proxy daemons
+            }
+        },
+    }
+    # SCW_EM_RV2_SPEC = {
+    #     "nodeSelector": {
+    #         "riseproject.dev/board": "scw-em-rv2",
+    #     },
+    #     "resources": {
+    #         "cpu": "7000m",
+    #     }
+    # }
 
-    return k8s_labels
+    # Defaults to the Scaleway EM-RV1 board
+    k8s_spec = SCW_EM_RV1_SPEC
+
+    # We want to support more labels like "rva23", or "rvv" in the future
+    # if "rva23" in job_labels or "rvv" in job_labels::
+    #     k8s_spec = SCW_EM_RV2_SPEC
+
+    return k8s_image, k8s_spec, list(job_labels)
 
 def authorize_organization(payload):
     """Authorize the organization."""
@@ -213,7 +246,7 @@ def ensure_runner_group(payload, installation_token):
                      RUNNER_GROUP_NAME, org_login, error)
         raise WebhookError(500, f"Failed to create runner group: {error}")
 
-def create_jit_runner_config(payload, installation_token, runner_group_id):
+def create_jit_runner_config(payload, installation_token, runner_group_id, job_labels):
     """Create a JIT runner configuration for a new ephemeral runner."""
     org_login = payload.get("organization", {}).get("login")
     if not org_login:
@@ -223,7 +256,6 @@ def create_jit_runner_config(payload, installation_token, runner_group_id):
     if not job_id:
         raise WebhookError(400, "Missing workflow_job id in payload")
 
-    job_labels = payload.get("workflow_job", {}).get("labels", [])
     pod_name = f"rise-riscv-runner-workflow-{job_id}-{int(time.time())}"
 
     headers = {
@@ -259,19 +291,20 @@ def init_k8s_config():
         )
     return yaml.safe_load(kubeconfig)
 
-def provision_runner(jit_config, pod_name, k8s_labels):
+def provision_runner(jit_config, pod_name, k8s_image, k8s_spec):
     """Provision a new runner in a Kubernetes pod."""
     with k8s.config.new_client_from_config_dict(init_k8s_config()) as client:
         api = k8s.client.CoreV1Api(client)
 
         namespace = os.environ.get("K8S_NAMESPACE", "default")
-        image = os.environ.get("RUNNER_IMAGE", "cloudv10x/github-actions-riscv:docker-ubuntu-2.331.0")
+        image = os.environ.get("RUNNER_IMAGE", k8s_image)
 
         pod_manifest = {
             "apiVersion": "v1",
             "kind": "Pod",
             "metadata": {"name": pod_name, "labels": {"app": "rise-riscv-runner"}},
             "spec": {
+                **k8s_spec,
                 "containers": [{
                     "name": "runner",
                     "image": image,
@@ -296,9 +329,9 @@ def health():
 def webhook():
     body = check_webhook_signature(request.headers, request.get_data(as_text=True))
     payload = check_webhook_event(body)
-    k8s_labels = check_required_labels(payload)
+    k8s_image, k8s_spec, job_labels = check_required_labels(payload)
     authorize_organization(payload)
     installation_token = authenticate_app_as_organization(payload)
     runner_group_id = ensure_runner_group(payload, installation_token)
-    jit_config, pod_name = create_jit_runner_config(payload, installation_token, runner_group_id)
-    return provision_runner(jit_config, pod_name, k8s_labels)
+    jit_config, pod_name = create_jit_runner_config(payload, installation_token, runner_group_id, job_labels)
+    return provision_runner(jit_config, pod_name, k8s_image, k8s_spec)
