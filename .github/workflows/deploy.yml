@@ -1,0 +1,78 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main, staging]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to deploy"
+        type: choice
+        options:
+          - staging
+          - production
+        default: staging
+
+env:
+  REGISTRY: rg.fr-par.scw.cloud
+  IMAGE: funcscwriseriscvrunnerappqdvknz9s/gh-webhook
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements-dev.txt
+          PYTHONPATH=${{ github.workspace }} pytest
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set image tag
+        id: env
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            ENV="${{ inputs.environment }}"
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            ENV="production"
+          else
+            ENV="staging"
+          fi
+          if [[ "$ENV" == "production" ]]; then
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=staging" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Login to Scaleway Container Registry
+        run: echo "${{ secrets.SCW_SECRET_KEY }}" | docker login ${{ env.REGISTRY }} -u nologin --password-stdin
+
+      - name: Build and push Docker image
+        run: |
+          docker buildx build --platform linux/amd64 -t ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ steps.env.outputs.tag }} --push .
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+
+      - name: Deploy to Scaleway
+        run: npx serverless@3 deploy --verbose
+        env:
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+          GHAPP_WEBHOOK_SECRET: ${{ secrets.GHAPP_WEBHOOK_SECRET }}
+          GHAPP_PRIVATE_KEY: ${{ secrets.GHAPP_PRIVATE_KEY }}
+          K8S_KUBECONFIG: ${{ secrets.K8S_KUBECONFIG }}
+
+      - name: Health check
+        run: python3 ./bin/check-health.py ${{ steps.env.outputs.tag == 'staging' && '--staging' || '' }}

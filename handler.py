@@ -1,16 +1,32 @@
+import functools
 import hashlib
 import hmac
 import json
+import logging
 import jwt
 import kubernetes as k8s
 import os
 import requests
 import sys
-import tempfile
 import time
+import yaml
 
 from flask import Flask, request, make_response
 app = Flask(__name__)
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
+
+class WebhookError(Exception):
+    """Exception raised during webhook processing."""
+    def __init__(self, status_code, message):
+        self.status_code = status_code
+        self.message = message
+        super().__init__(message)
+
+@app.errorhandler(WebhookError)
+def handle_webhook_error(e):
+    return make_response(e.message, e.status_code)
 
 # --- 3. Authorize the User (Access Control) ---
 # This is the allowlist of GitHub organization IDs that are authorized to use this runner.
@@ -18,6 +34,8 @@ app = Flask(__name__)
 ALLOWED_ORGS = {
     152654596, # riseproject-dev
 }
+
+RUNNER_GROUP_NAME = "RISE RISC-V Runners"
 
 def compute_signature(body, secret):
     return hmac.new(secret.encode('utf-8'), msg=body.encode('utf-8'), digestmod=hashlib.sha256)
@@ -44,158 +62,222 @@ def generate_jwt(app_id, private_key):
     }
     return jwt.JWT().encode(payload, private_key, alg="RS256")
 
-def get_installation_access_token(jwt_token, installation_id):
-    """Get an installation access token from GitHub."""
+def get_installation_access_token(jwt_token, installation_id, repository_id):
+    """Get an installation access token from GitHub, scoped to a single repository."""
     headers = {
         "Authorization": f"Bearer {jwt_token}",
         "Accept": "application/vnd.github.v3+json",
     }
     url = f"https://api.github.com/app/installations/{installation_id}/access_tokens"
-    response = requests.post(url, headers=headers)
+    body = {"repository_ids": [repository_id]}
+    response = requests.post(url, headers=headers, json=body)
 
     if response.status_code == 201:
-        return response.json().get("token"), None
+        logger.info("Obtained installation access token for installation %s, response = %s", installation_id, response.json())
+        return response.json().get("token")
     else:
-        return None, response.json().get("message", "Failed to get installation token")
+        error = response.json().get("message", "Failed to get installation token")
+        logger.error("Failed to get installation access token for installation %s: %s", installation_id, error)
+        raise WebhookError(500, error)
 
 
 def check_webhook_signature(headers, body):
     """Verify the webhook signature."""
-    secret = os.environ.get("GITHUB_WEBHOOK_SECRET")
+    secret = os.environ.get("GHAPP_WEBHOOK_SECRET")
     if not secret:
-        return None, {"statusCode": 500, "body": "GITHUB_WEBHOOK_SECRET is not configured."}
+        raise WebhookError(500, "GHAPP_WEBHOOK_SECRET is not configured.")
 
     signature = headers.get("X-Hub-Signature-256")
     is_valid, message = verify_signature(body, signature, secret)
 
     if not is_valid:
-        return None, {"statusCode": 401, "body": message}
+        logger.warning("Webhook signature verification failed: %s", message)
+        raise WebhookError(401, message)
 
-    return body, None
+    return body
 
 def check_webhook_event(body):
     """Check if the event is a 'queued' workflow_job."""
     try:
         payload = json.loads(body)
     except json.JSONDecodeError:
-        return None, {"statusCode": 400, "body": "Invalid JSON payload"}
+        raise WebhookError(400, "Invalid JSON payload")
 
-    if payload.get("action") != "queued":
-        return None, {
-            "statusCode": 200,
-            "body": f"Ignoring action: {payload.get('action')}",
-        }
+    action = payload.get("action")
+    if action != "queued":
+        logger.info("Ignoring action: %s", action)
+        raise WebhookError(200, f"Ignoring action: {action}")
 
-    return payload, None
+    job = payload.get("workflow_job", {})
+    logger.info("Received queued workflow_job id=%s name=%s repo=%s labels=%s",
+                job.get("id"), job.get("name"),
+                payload.get("repository", {}).get("full_name"),
+                job.get("labels"))
+    return payload
+
+def check_required_labels(payload):
+    """Check that the workflow job has the required runs-on labels."""
+    job_labels = set(payload.get("workflow_job", {}).get("labels", []))
+
+    if not "rise" in job_labels:
+        logger.info("Ignoring job: missing required 'rise' label (got %s)", sorted(job_labels))
+        raise WebhookError(200, "Ignoring job: missing required 'rise' label.")
+
+    if not any(label in job_labels for label in ["ubuntu-24.04-riscv"]):
+        logger.info("Ignoring job: missing required platform label (got %s)", sorted(job_labels))
+        raise WebhookError(200, "Ignoring job: missing required platform label.")
+
+    # We want to support more labels like "rva23", or "rvv" in the future
+    k8s_labels = set()
+
+    return k8s_labels
 
 def authorize_organization(payload):
     """Authorize the organization."""
     org_id = payload.get("organization", {}).get("id")
     if not org_id:
-        return None, {"statusCode": 400, "body": "Missing organization ID in payload"}
+        raise WebhookError(400, "Missing organization ID in payload")
 
     if org_id not in ALLOWED_ORGS:
-        return None, {
-            "statusCode": 200,
-            "body": f"Organization {org_id} not authorized.",
-        }
+        logger.info("Organization %s (%s) not authorized",
+                     payload.get("organization", {}).get("login"), org_id)
+        raise WebhookError(200, f"Organization {org_id} not authorized.")
 
-    return org_id, None
+    logger.info("Organization %s authorized", payload.get("organization", {}).get("login"))
+    return org_id
 
 def authenticate_app_as_organization(payload):
     """Authenticate the app as the organization and get an installation token."""
 
-    private_key = os.environ.get("GITHUB_APP_PRIVATE_KEY")
+    private_key = os.environ.get("GHAPP_PRIVATE_KEY")
     if not private_key:
-        return None, {
-            "statusCode": 500,
-            "body": "GITHUB_APP_PRIVATE_KEY is not configured.",
-        }
+        raise WebhookError(500, "GHAPP_PRIVATE_KEY is not configured.")
 
     app_id = 2167633 # https://github.com/apps/rise-risc-v-runner
     private_key = jwt.jwk_from_pem(private_key.encode('utf-8'))
 
     if not private_key:
-        return None, {
-            "statusCode": 500,
-            "body": "GITHUB_APP_PRIVATE_KEY is not a valid PEM file.",
-        }
+        raise WebhookError(500, "GHAPP_PRIVATE_KEY is not a valid PEM file.")
 
     installation_id = payload.get("installation", {}).get("id")
     if not installation_id:
-        return None, {"statusCode": 400, "body": "Missing installation ID in payload"}
+        raise WebhookError(400, "Missing installation ID in payload")
+
+    repo_id = payload.get("repository", {}).get("id")
+    if not repo_id:
+        raise WebhookError(400, "Missing repository ID in payload")
 
     jwt_token = generate_jwt(app_id, private_key)
-    token, error = get_installation_access_token(jwt_token, installation_id)
+    return get_installation_access_token(jwt_token, installation_id, repo_id)
 
-    if error:
-        return None, {"statusCode": 500, "body": error}
-
-    return token, None
-
-def create_runner_registration_token(payload, installation_token):
-    """Create a registration token for a new runner."""
+def ensure_runner_group(payload, installation_token):
+    """Ensure the runner group exists and return its ID."""
     org_login = payload.get("organization", {}).get("login")
     if not org_login:
-        return {"statusCode": 400, "body": "Missing organization login in payload"}
+        raise WebhookError(400, "Missing organization login in payload")
 
     headers = {
-        "Authorization": f"token {installation_token}",
+        "Authorization": f"Bearer {installation_token}",
         "Accept": "application/vnd.github.v3+json",
     }
-    url = f"https://api.github.com/orgs/{org_login}/actions/runners/registration-token"
-    response = requests.post(url, headers=headers)
+
+    # List existing runner groups
+    list_url = f"https://api.github.com/orgs/{org_login}/actions/runner-groups"
+    response = requests.get(list_url, headers=headers)
+    if response.status_code != 200:
+        error = response.json()
+        logger.error("Failed to list runner groups for org %s: %s", org_login, error)
+        raise WebhookError(500, f"Failed to list runner groups: {error}")
+
+    for group in response.json().get("runner_groups", []):
+        if group.get("name") == RUNNER_GROUP_NAME:
+            logger.info("Found existing runner group '%s' (id=%s) for org %s",
+                        RUNNER_GROUP_NAME, group["id"], org_login)
+            return group["id"]
+
+    # Group not found, create it
+    create_body = {
+        "name": RUNNER_GROUP_NAME,
+        "visibility": "all",
+        "allows_public_repositories": True,
+    }
+    response = requests.post(list_url, headers=headers, json=create_body)
+    if response.status_code == 201:
+        group_id = response.json().get("id")
+        logger.info("Created runner group '%s' (id=%s) for org %s",
+                     RUNNER_GROUP_NAME, group_id, org_login)
+        return group_id
+    else:
+        error = response.json()
+        logger.error("Failed to create runner group '%s' for org %s: %s",
+                     RUNNER_GROUP_NAME, org_login, error)
+        raise WebhookError(500, f"Failed to create runner group: {error}")
+
+def create_jit_runner_config(payload, installation_token, runner_group_id):
+    """Create a JIT runner configuration for a new ephemeral runner."""
+    org_login = payload.get("organization", {}).get("login")
+    if not org_login:
+        raise WebhookError(400, "Missing organization login in payload")
+
+    job_id = payload.get("workflow_job", {}).get("id")
+    if not job_id:
+        raise WebhookError(400, "Missing workflow_job id in payload")
+
+    job_labels = payload.get("workflow_job", {}).get("labels", [])
+    pod_name = f"rise-riscv-runner-workflow-{job_id}-{int(time.time())}"
+
+    headers = {
+        "Authorization": f"Bearer {installation_token}",
+        "Accept": "application/vnd.github.v3+json",
+    }
+    url = f"https://api.github.com/orgs/{org_login}/actions/runners/generate-jitconfig"
+    body = {
+        "name": pod_name,
+        "runner_group_id": runner_group_id,
+        "labels": job_labels,
+    }
+    response = requests.post(url, headers=headers, json=body)
 
     if response.status_code == 201:
-        return response.json().get("token"), None
+        jit_config = response.json().get("encoded_jit_config")
+        logger.info("Created JIT runner config for org %s, runner name=%s, group_id=%s",
+                     org_login, pod_name, runner_group_id)
+        return jit_config, pod_name
     else:
-        return None, response.json().get("message", "Failed to create runner registration token")
+        error = response.json()
+        logger.error("Failed to create JIT runner config for org %s: %s", org_login, error)
+        raise WebhookError(500, f"Failed to create JIT runner config: {error}")
 
-def load_k8s_config():
-    """Load Kubernetes configuration."""
-    # If not in a cluster, fall back to manual configuration from environment variables.
-    # This is an alternative to k8s.config.load_kube_config() which relies on a local file.
-    host = os.environ.get("K8S_API_SERVER")
-    token = os.environ.get("K8S_API_TOKEN")
+@functools.lru_cache(maxsize=1)
+def init_k8s_config():
+    """Load Kubernetes configuration from a kubeconfig env var.
+    Called once at startup; result is memoized."""
+    kubeconfig = os.environ.get("K8S_KUBECONFIG")
+    if not kubeconfig:
+        raise k8s.config.ConfigException(
+            "K8s not configured: K8S_KUBECONFIG must be set to a kubeconfig."
+        )
+    return yaml.safe_load(kubeconfig)
 
-    if not host or not token:
-        raise k8s.config.ConfigException("K8s not configured: K8S_API_SERVER and K8S_API_TOKEN must be set when not running in-cluster.")
-
-    configuration = k8s.client.Configuration()
-    configuration.host = host
-    configuration.api_key_prefix['authorization'] = 'Bearer'
-    configuration.api_key['authorization'] = token
-    # In a real-world scenario, you would also handle TLS verification,
-    # possibly by loading a CA certificate from another env var.
-    # For simplicity here, we'll disable it, but this is not recommended for production.
-    configuration.verify_ssl = False
-
-    return configuration
-
-def provision_runner(payload, runner_token):
+def provision_runner(jit_config, pod_name, k8s_labels):
     """Provision a new runner in a Kubernetes pod."""
-    with k8s.client.ApiClient(load_k8s_config()) as client:
+    with k8s.config.new_client_from_config_dict(init_k8s_config()) as client:
         api = k8s.client.CoreV1Api(client)
 
-        repo_url = payload.get("repository", {}).get("html_url")
-        if not repo_url:
-            raise Exception("Missing repository URL in payload")
-
-        pod_name = f"rise-riscv-runner-{payload.get('workflow_job', {}).get('id')}-{int(time.time())}"
         namespace = os.environ.get("K8S_NAMESPACE", "default")
-        image = os.environ.get("RUNNER_IMAGE", "riscv64/debian@sha256:5d2913fff700bf597c720fa1385d13c858e536c211955acc59fa747952fc2cef") # Replace with your runner image
+        image = os.environ.get("RUNNER_IMAGE", "cloudv10x/github-actions-riscv:docker-ubuntu-2.331.0")
 
         pod_manifest = {
             "apiVersion": "v1",
             "kind": "Pod",
-            "metadata": {"name": pod_name},
+            "metadata": {"name": pod_name, "labels": {"app": "rise-riscv-runner"}},
             "spec": {
                 "containers": [{
                     "name": "runner",
                     "image": image,
-                    "command": ["/bin/bash", "-c"],
+                    "command": ["/bin/bash", "-eux", "-o", "pipefail", "-c"],
                     "args": [
-                        f"./config.sh --url {repo_url} --token {runner_token} --name {pod_name} --unattended --ephemeral && ./run.sh"
+                        f"./run.sh --jitconfig {jit_config}"
                     ]
                 }],
                 "restartPolicy": "Never"
@@ -203,32 +285,20 @@ def provision_runner(payload, runner_token):
         }
 
         api.create_namespaced_pod(body=pod_manifest, namespace=namespace)
-        return f"Pod {pod_name} created successfully.", None
+        logger.info("Provisioned runner pod %s in namespace %s (image=%s)", pod_name, namespace, image)
+        return f"Pod {pod_name} created successfully."
+
+@app.route("/health", methods=['GET'])
+def health():
+    return "ok"
 
 @app.route("/", methods=['POST'])
 def webhook():
-    body, err = check_webhook_signature(request.headers, request.get_data(as_text=True))
-    if err:
-        return make_response(err["body"], err["statusCode"])
-
-    payload, err = check_webhook_event(body)
-    if err:
-        return make_response(err["body"], err["statusCode"])
-
-    _, err = authorize_organization(payload)
-    if err:
-        return make_response(err["body"], err["statusCode"])
-
-    installation_token, err = authenticate_app_as_organization(payload)
-    if err:
-        return make_response(err["body"], err["statusCode"])
-
-    runner_token, err = create_runner_registration_token(payload, installation_token)
-    if err:
-        return make_response(err["body"], err["statusCode"])
-
-    result, err = provision_runner(payload, runner_token)
-    if err:
-        return make_response(err["body"], err["statusCode"])
-
-    return result
+    body = check_webhook_signature(request.headers, request.get_data(as_text=True))
+    payload = check_webhook_event(body)
+    k8s_labels = check_required_labels(payload)
+    authorize_organization(payload)
+    installation_token = authenticate_app_as_organization(payload)
+    runner_group_id = ensure_runner_group(payload, installation_token)
+    jit_config, pod_name = create_jit_runner_config(payload, installation_token, runner_group_id)
+    return provision_runner(jit_config, pod_name, k8s_labels)

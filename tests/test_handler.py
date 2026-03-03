@@ -10,11 +10,14 @@ import kubernetes
 
 from handler import (
     ALLOWED_ORGS,
+    RUNNER_GROUP_NAME,
+    WebhookError,
     check_webhook_signature,
     check_webhook_event,
     authorize_organization,
     authenticate_app_as_organization,
-    create_runner_registration_token,
+    ensure_runner_group,
+    create_jit_runner_config,
     provision_runner,
     compute_signature,
 )
@@ -23,52 +26,56 @@ def test_valid_signature():
     secret = "abcdefghi01234"
     body = '{"action":"queued"}'
     expected_signature = compute_signature(body, secret).hexdigest()
-    os.environ["GITHUB_WEBHOOK_SECRET"] = secret
+    os.environ["GHAPP_WEBHOOK_SECRET"] = secret
     headers = { "X-Hub-Signature-256": f"sha256={expected_signature}" }
 
-    _, err = check_webhook_signature(headers, body)
-    assert err is None
+    result = check_webhook_signature(headers, body)
+    assert result == body
 
 def test_missing_secret():
-    if "GITHUB_WEBHOOK_SECRET" in os.environ:
-        del os.environ["GITHUB_WEBHOOK_SECRET"]
+    if "GHAPP_WEBHOOK_SECRET" in os.environ:
+        del os.environ["GHAPP_WEBHOOK_SECRET"]
 
-    _, err = check_webhook_signature({}, "")
-    assert err["statusCode"] == 500
+    with pytest.raises(WebhookError) as exc:
+        check_webhook_signature({}, "")
+    assert exc.value.status_code == 500
 
 def test_invalid_signature():
-    os.environ["GITHUB_WEBHOOK_SECRET"] = "secret"
+    os.environ["GHAPP_WEBHOOK_SECRET"] = "secret"
     headers = { "X-Hub-Signature-256": "sha256=invalid" }
-    _, err = check_webhook_signature(headers, "")
-    assert err["statusCode"] == 401
+    with pytest.raises(WebhookError) as exc:
+        check_webhook_signature(headers, "")
+    assert exc.value.status_code == 401
 
 def test_queued_event():
     body = '{"action":"queued"}'
-    payload, err = check_webhook_event(body)
-    assert err is None
+    payload = check_webhook_event(body)
     assert payload["action"] == "queued"
 
 def test_ignored_event():
     body = '{"action":"completed"}'
-    _, err = check_webhook_event(body)
-    assert err["statusCode"] == 200
-    assert "Ignoring action" in err["body"]
+    with pytest.raises(WebhookError) as exc:
+        check_webhook_event(body)
+    assert exc.value.status_code == 200
+    assert "Ignoring action" in exc.value.message
 
 def test_invalid_json():
-    _, err = check_webhook_event("{")
-    assert err["statusCode"] == 400
+    with pytest.raises(WebhookError) as exc:
+        check_webhook_event("{")
+    assert exc.value.status_code == 400
 
 def test_authorized_user():
     org_id = list(ALLOWED_ORGS)[0]
     payload = {"organization": {"id": org_id}}
-    _, err = authorize_organization(payload)
-    assert err is None
+    result = authorize_organization(payload)
+    assert result == org_id
 
 def test_unauthorized_user():
     payload = {"organization": {"id": 1}}
-    _, err = authorize_organization(payload)
-    assert err["statusCode"] == 200
-    assert "not authorized" in err["body"]
+    with pytest.raises(WebhookError) as exc:
+        authorize_organization(payload)
+    assert exc.value.status_code == 200
+    assert "not authorized" in exc.value.message
 
 def test_authentication(requests_mock):
     app_id = 2167633
@@ -104,51 +111,104 @@ XHNCH2WjL0p4gB7VmGgy1U4lAOI6uaTjtosrIzpG+yO7hS0NtqKUQYM8nKuURjZr
 +cs5S6dUsqBGIxQpSLhLOu5eSA==
 -----END PRIVATE KEY-----
 """
-    os.environ["GITHUB_APP_PRIVATE_KEY"] = private_key
+    os.environ["GHAPP_PRIVATE_KEY"] = private_key
 
-    payload = {"installation": {"id": installation_id}}
+    payload = {
+        "installation": {"id": installation_id},
+        "repository": {"id": 99999},
+    }
 
     requests_mock.post(f"https://api.github.com/app/installations/{installation_id}/access_tokens",
                        json={"token": "v1.1f699f1069f60xxx"},
                        status_code=201)
 
-    token, err = authenticate_app_as_organization(payload)
-    assert err is None
+    token = authenticate_app_as_organization(payload)
     assert token is not None
 
-def test_create_runner_token(requests_mock):
-    """Test the runner token creation."""
+def test_ensure_runner_group_existing(requests_mock):
+    """Test finding an existing runner group."""
     installation_token = "v1.1f699f1069f60xxx"
-
     org_login = "riseproject-dev"
     payload = {"organization": {"login": org_login}}
 
-    requests_mock.post(f"https://api.github.com/orgs/{org_login}/actions/runners/registration-token",
-                       json={"token": "runner-token"},
-                       status_code=201)
+    requests_mock.get(
+        f"https://api.github.com/orgs/{org_login}/actions/runner-groups",
+        json={
+            "total_count": 2,
+            "runner_groups": [
+                {"id": 1, "name": "Default"},
+                {"id": 42, "name": RUNNER_GROUP_NAME},
+            ]
+        },
+        status_code=200,
+    )
 
-    runner_token, err = create_runner_registration_token(payload, installation_token)
-    assert err is None
-    assert runner_token == "runner-token"
+    group_id = ensure_runner_group(payload, installation_token)
+    assert group_id == 42
 
-@patch('handler.k8s.config.load_incluster_config')
+def test_ensure_runner_group_create(requests_mock):
+    """Test creating a runner group when it doesn't exist."""
+    installation_token = "v1.1f699f1069f60xxx"
+    org_login = "riseproject-dev"
+    payload = {"organization": {"login": org_login}}
+
+    requests_mock.get(
+        f"https://api.github.com/orgs/{org_login}/actions/runner-groups",
+        json={"total_count": 1, "runner_groups": [{"id": 1, "name": "Default"}]},
+        status_code=200,
+    )
+    requests_mock.post(
+        f"https://api.github.com/orgs/{org_login}/actions/runner-groups",
+        json={"id": 99, "name": RUNNER_GROUP_NAME},
+        status_code=201,
+    )
+
+    group_id = ensure_runner_group(payload, installation_token)
+    assert group_id == 99
+
+def test_create_jit_runner_config(requests_mock):
+    """Test JIT runner config creation."""
+    installation_token = "v1.1f699f1069f60xxx"
+    org_login = "riseproject-dev"
+    runner_group_id = 42
+    payload = {
+        "organization": {"login": org_login},
+        "workflow_job": {"id": 12345, "labels": ["rise", "ubuntu-24.04-riscv"]},
+    }
+
+    requests_mock.post(
+        f"https://api.github.com/orgs/{org_login}/actions/runners/generate-jitconfig",
+        json={
+            "runner": {"id": 23, "name": "test-runner"},
+            "encoded_jit_config": "base64-encoded-jit-config-string",
+        },
+        status_code=201,
+    )
+
+    jit_config, pod_name = create_jit_runner_config(payload, installation_token, runner_group_id)
+    assert jit_config == "base64-encoded-jit-config-string"
+    assert pod_name.startswith("rise-riscv-runner-workflow-12345-")
+
+@patch('handler.init_k8s_config', return_value={})
+@patch('handler.k8s.config.new_client_from_config_dict')
 @patch('handler.k8s.client.CoreV1Api')
-def test_provision_runner_success(mock_core_v1_api, mock_load_incluster_config):
-    """Test successful runner provisioning."""
+def test_provision_runner_success(mock_core_v1_api, mock_create_client, mock_init_config):
+    """Test successful runner provisioning with JIT config."""
+    mock_api_client = MagicMock()
+    mock_create_client.return_value = mock_api_client
+    mock_api_client.__enter__ = MagicMock(return_value=mock_api_client)
+    mock_api_client.__exit__ = MagicMock(return_value=False)
+
     mock_api_instance = MagicMock()
     mock_core_v1_api.return_value = mock_api_instance
 
-    runner_token = "test-runner-token"
-    payload = {
-        "repository": {"html_url": "https://github.com/test/repo"},
-        "workflow_job": {"id": 12345}
-    }
+    jit_config = "base64-encoded-jit-config"
+    pod_name = "rise-riscv-runner-workflow-12345-1700000000"
     os.environ["K8S_NAMESPACE"] = "test-namespace"
     os.environ["RUNNER_IMAGE"] = "test-runner-image:latest"
-    os.environ["K8S_API_SERVER"] = "test-k8s-api-server"
-    os.environ["K8S_API_TOKEN"] = "test-k8s-api-token"
 
-    _ = provision_runner(payload, runner_token)
+    result = provision_runner(jit_config, pod_name, {"rise", "ubuntu-24.04-riscv"})
+    assert "created successfully" in result
 
     mock_core_v1_api.assert_called_once()
     mock_api_instance.create_namespaced_pod.assert_called_once()
@@ -156,24 +216,30 @@ def test_provision_runner_success(mock_core_v1_api, mock_load_incluster_config):
     # Verify pod manifest details
     call_args = mock_api_instance.create_namespaced_pod.call_args
     pod_manifest = call_args[1]['body']
-    assert pod_manifest['metadata']['name'].startswith('rise-riscv-runner-12345-')
+    assert pod_manifest['metadata']['name'] == pod_name
     assert pod_manifest['spec']['containers'][0]['image'] is not None
-    assert pod_manifest['spec']['containers'][0]['command'] is not None
-    assert pod_manifest['spec']['containers'][0]['args'] is not None
-    assert len(pod_manifest['spec']['containers'][0]['args']) > 0
+    args = pod_manifest['spec']['containers'][0]['args']
+    assert len(args) == 1
+    assert "--jitconfig" in args[0]
+    assert jit_config in args[0]
 
 def test_provision_runner_config_exception():
-    """Test runner provisioning failure due to Kubernetes config error."""
-    if "K8S_API_SERVER" in os.environ: del os.environ["K8S_API_SERVER"]
-    if "K8S_API_TOKEN" in os.environ: del os.environ["K8S_API_TOKEN"]
-    with pytest.raises(kubernetes.config.ConfigException):
-        _ = provision_runner({}, "token")
+    """Test runner provisioning failure due to missing K8S_KUBECONFIG."""
+    import handler
+    handler.init_k8s_config.cache_clear()
+    saved = os.environ.pop("K8S_KUBECONFIG", None)
+    try:
+        with pytest.raises(kubernetes.config.ConfigException):
+            provision_runner("jit-config", "test-pod", set())
+    finally:
+        if saved is not None:
+            os.environ["K8S_KUBECONFIG"] = saved
+            handler.init_k8s_config.cache_clear()
 
-@patch('handler.k8s.client.CoreV1Api', side_effect=Exception("Test API Error"))
-def test_provision_runner_api_exception(mock_core_v1_api):
+@patch('handler.init_k8s_config', return_value={})
+@patch('handler.k8s.config.new_client_from_config_dict', side_effect=Exception("Test API Error"))
+def test_provision_runner_api_exception(mock_create_client, mock_init_config):
     """Test runner provisioning failure due to a generic API error."""
-    os.environ["K8S_API_SERVER"] = "test-k8s-api-server"
-    os.environ["K8S_API_TOKEN"] = "test-k8s-api-token"
     with pytest.raises(Exception) as excinfo:
-        _ = provision_runner({"repository": {"html_url": "url"}, "workflow_job": {"id": 1}}, "token")
+        provision_runner("jit-config", "test-pod", set())
     assert "Test API Error" == str(excinfo.value)

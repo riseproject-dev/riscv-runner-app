@@ -4,7 +4,7 @@
   "keywords": [],
   "author": "",
   "devDependencies": {
-    "serverless-scaleway-functions": "^0.4.16"
+    "serverless-scaleway-functions": "^0.5.0"
   },
   "description": ""
 }

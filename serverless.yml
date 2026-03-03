@@ -2,9 +2,9 @@ service: rise-riscv-runner-app
 
 provider:
   name: scaleway
-  scwRegion: ${env:SCW_REGION, "fr-par"}
-  scwProject: ${env:SCW_PROJECT, "03a2e06e-e7c1-45a6-9f05-775d813c2e28"} # RISE - RISC-V Runner Github App
-  scwToken: ${env:SCW_API_TOKEN}
+  scwRegion: ${env:SCW_DEFAULT_REGION, "fr-par"}
+  scwProject: ${env:SCW_DEFAULT_PROJECT_ID, "03a2e06e-e7c1-45a6-9f05-775d813c2e28"}
+  scwToken: ${env:SCW_SECRET_KEY}
 
 plugins:
   - serverless-scaleway-functions
@@ -15,16 +15,25 @@ package:
     - "!.gitignore"
     - "!.git/**"
 
+singleSource: false
 
 custom:
   containers:
     gh-webhook:
-      directory: .
+      registryImage: rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/gh-webhook:latest
       port: 8080
       memoryLimit: 256
       cpuLimit: 100
       secret:
-        GITHUB_WEBHOOK_SECRET: ${env:GITHUB_WEBHOOK_SECRET}
-        GITHUB_APP_PRIVATE_KEY: ${env:GITHUB_APP_PRIVATE_KEY}
-        K8S_API_SERVER: ${env:K8S_API_SERVER}
-        K8S_API_TOKEN: ${env:SCW_API_TOKEN}
+        GHAPP_WEBHOOK_SECRET: ${env:GHAPP_WEBHOOK_SECRET}
+        GHAPP_PRIVATE_KEY: ${env:GHAPP_PRIVATE_KEY}
+        K8S_KUBECONFIG: ${env:K8S_KUBECONFIG}
+    gh-webhook-staging:
+      registryImage: rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/gh-webhook:staging
+      port: 8080
+      memoryLimit: 256
+      cpuLimit: 100
+      secret:
+        GHAPP_WEBHOOK_SECRET: ${env:GHAPP_WEBHOOK_SECRET}
+        GHAPP_PRIVATE_KEY: ${env:GHAPP_PRIVATE_KEY}
+        K8S_KUBECONFIG: ${env:K8S_KUBECONFIG}
