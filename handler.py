@@ -106,16 +106,17 @@ def check_webhook_event(body):
         raise WebhookError(400, "Invalid JSON payload")
 
     action = payload.get("action")
-    if action != "queued":
+    if action not in ("queued", "completed"):
         logger.info("Ignoring action: %s", action)
         raise WebhookError(200, f"Ignoring action: {action}")
 
     job = payload.get("workflow_job", {})
-    logger.info("Received queued workflow_job id=%s name=%s repo=%s labels=%s",
-                job.get("id"), job.get("name"),
+    logger.info("Received %s workflow_job id=%s name=%s repo=%s labels=%s",
+                action, job.get("id"), job.get("name"),
                 payload.get("repository", {}).get("full_name"),
                 job.get("labels"))
-    return payload
+
+    return payload, action
 
 def check_required_labels(payload):
     """Check that the workflow job has the required runs-on labels."""
@@ -248,7 +249,7 @@ def create_jit_runner_config(payload, installation_token, runner_group_id, job_l
     if not job_id:
         raise WebhookError(400, "Missing workflow_job id in payload")
 
-    pod_name = f"rise-riscv-runner-workflow-{job_id}-{int(time.time())}"
+    pod_name = f"rise-riscv-runner-workflow-{job_id}"
 
     headers = {
         "Authorization": f"Bearer {installation_token}",
@@ -288,7 +289,6 @@ def provision_runner(payload, jit_config, pod_name, k8s_image, k8s_spec):
     with k8s.config.new_client_from_config_dict(init_k8s_config()) as client:
         api = k8s.client.CoreV1Api(client)
 
-        namespace = os.environ.get("K8S_NAMESPACE", "default")
         image = os.environ.get("RUNNER_IMAGE", k8s_image)
 
         pod_manifest = {
@@ -314,11 +314,33 @@ def provision_runner(payload, jit_config, pod_name, k8s_image, k8s_spec):
             }
         }
 
-        api.create_namespaced_pod(body=pod_manifest, namespace=namespace)
+        api.create_namespaced_pod(body=pod_manifest, namespace="default")
         repo = payload.get("repository", {}).get("full_name")
         job_url = payload.get("workflow_job", {}).get("html_url")
-        logger.info("Provisioned runner pod %s in namespace %s (image=%s) for repo=%s job=%s", pod_name, namespace, image, repo, job_url)
+        logger.info("Provisioned runner pod %s for repo=%s, image=%s, job=%s", pod_name, repo, image, job_url)
         return f"Pod {pod_name} created successfully."
+
+def delete_runner(payload):
+    """Delete a runner pod for a cancelled workflow job."""
+    job_id = payload.get("workflow_job", {}).get("id")
+    if not job_id:
+        raise WebhookError(400, "Missing workflow_job id in payload")
+
+    pod_name = f"rise-riscv-runner-workflow-{job_id}"
+
+    with k8s.config.new_client_from_config_dict(init_k8s_config()) as client:
+        api = k8s.client.CoreV1Api(client)
+        try:
+            api.delete_namespaced_pod(name=pod_name, namespace="default")
+            repo = payload.get("repository", {}).get("full_name")
+            job_url = payload.get("workflow_job", {}).get("html_url")
+            logger.info("Deleted runner pod %s for repo=%s, job=%s", pod_name, repo, job_url)
+            return f"Pod {pod_name} deleted successfully."
+        except k8s.client.exceptions.ApiException as e:
+            if e.status == 404:
+                logger.info("Pod %s not found, already deleted", pod_name)
+                return f"Pod {pod_name} not found."
+            raise
 
 @app.route("/health", methods=['GET'])
 def health():
@@ -327,10 +349,18 @@ def health():
 @app.route("/", methods=['POST'])
 def webhook():
     body = check_webhook_signature(request.headers, request.get_data(as_text=True))
-    payload = check_webhook_event(body)
-    k8s_image, k8s_spec, job_labels = check_required_labels(payload)
-    authorize_organization(payload)
-    installation_token = authenticate_app_as_organization(payload)
-    runner_group_id = ensure_runner_group(payload, installation_token)
-    jit_config, pod_name = create_jit_runner_config(payload, installation_token, runner_group_id, job_labels)
-    return provision_runner(payload, jit_config, pod_name, k8s_image, k8s_spec)
+    payload, action = check_webhook_event(body)
+
+    if action == "queued":
+        k8s_image, k8s_spec, job_labels = check_required_labels(payload)
+        authorize_organization(payload)
+        installation_token = authenticate_app_as_organization(payload)
+        runner_group_id = ensure_runner_group(payload, installation_token)
+        jit_config, pod_name = create_jit_runner_config(payload, installation_token, runner_group_id, job_labels)
+        return provision_runner(payload, jit_config, pod_name, k8s_image, k8s_spec)
+    elif action == "completed":
+        return delete_runner(payload)
+    else:
+        logger.info("Ignoring {action} job")
+        raise WebhookError(200, f"Ignoring {action} job")
+

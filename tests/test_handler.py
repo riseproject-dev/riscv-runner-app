@@ -19,6 +19,7 @@ from handler import (
     ensure_runner_group,
     create_jit_runner_config,
     provision_runner,
+    delete_runner,
     compute_signature,
 )
 
@@ -49,11 +50,18 @@ def test_invalid_signature():
 
 def test_queued_event():
     body = '{"action":"queued"}'
-    payload = check_webhook_event(body)
+    payload, action = check_webhook_event(body)
+    assert action == "queued"
     assert payload["action"] == "queued"
 
+def test_completed_event():
+    body = '{"action":"completed","workflow_job":{"id":123}}'
+    payload, action = check_webhook_event(body)
+    assert action == "completed"
+    assert payload["action"] == "completed"
+
 def test_ignored_event():
-    body = '{"action":"completed"}'
+    body = '{"action":"in_progress"}'
     with pytest.raises(WebhookError) as exc:
         check_webhook_event(body)
     assert exc.value.status_code == 200
@@ -187,7 +195,7 @@ def test_create_jit_runner_config(requests_mock):
 
     jit_config, pod_name = create_jit_runner_config(payload, installation_token, runner_group_id, ["rise", "ubuntu-24.04-riscv"])
     assert jit_config == "base64-encoded-jit-config-string"
-    assert pod_name.startswith("rise-riscv-runner-workflow-12345-")
+    assert pod_name == "rise-riscv-runner-workflow-12345"
 
 @patch('handler.init_k8s_config', return_value={})
 @patch('handler.k8s.config.new_client_from_config_dict')
@@ -248,3 +256,49 @@ def test_provision_runner_api_exception(mock_create_client, mock_init_config):
     with pytest.raises(Exception) as excinfo:
         provision_runner({}, "jit-config", "test-pod", "img", {})
     assert "Test API Error" == str(excinfo.value)
+
+@patch('handler.init_k8s_config', return_value={})
+@patch('handler.k8s.config.new_client_from_config_dict')
+@patch('handler.k8s.client.CoreV1Api')
+def test_delete_runner_success(mock_core_v1_api, mock_create_client, mock_init_config):
+    """Test successful deletion of a cancelled runner pod."""
+    mock_api_client = MagicMock()
+    mock_create_client.return_value = mock_api_client
+    mock_api_client.__enter__ = MagicMock(return_value=mock_api_client)
+    mock_api_client.__exit__ = MagicMock(return_value=False)
+
+    mock_api_instance = MagicMock()
+    mock_core_v1_api.return_value = mock_api_instance
+
+    payload = {
+        "workflow_job": {"id": 12345, "conclusion": "cancelled", "html_url": "https://github.com/org/repo/actions/runs/1/job/12345"},
+        "repository": {"full_name": "riseproject-dev/sample"},
+    }
+
+    result = delete_runner(payload)
+    assert "deleted successfully" in result
+    mock_api_instance.delete_namespaced_pod.assert_called_once_with(
+        name="rise-riscv-runner-workflow-12345", namespace="default"
+    )
+
+@patch('handler.init_k8s_config', return_value={})
+@patch('handler.k8s.config.new_client_from_config_dict')
+@patch('handler.k8s.client.CoreV1Api')
+def test_delete_runner_not_found(mock_core_v1_api, mock_create_client, mock_init_config):
+    """Test deletion when pod is already gone."""
+    mock_api_client = MagicMock()
+    mock_create_client.return_value = mock_api_client
+    mock_api_client.__enter__ = MagicMock(return_value=mock_api_client)
+    mock_api_client.__exit__ = MagicMock(return_value=False)
+
+    mock_api_instance = MagicMock()
+    mock_core_v1_api.return_value = mock_api_instance
+    mock_api_instance.delete_namespaced_pod.side_effect = kubernetes.client.exceptions.ApiException(status=404)
+
+    payload = {
+        "workflow_job": {"id": 12345, "conclusion": "cancelled"},
+        "repository": {"full_name": "riseproject-dev/sample"},
+    }
+
+    result = delete_runner(payload)
+    assert "not found" in result
