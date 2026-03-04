@@ -36,6 +36,8 @@ custom:
         httpPath: /health
         interval: 10s
         failureThreshold: 3
+      # VPC for Redis access
+      privateNetworkId: "58fa41d0-f6a4-4b6f-8f65-b788563842c1"
 
     gh-webhook-staging:
       registryImage: ${env:REGISTRY}/${env:IMAGE}:staging
@@ -56,3 +58,5 @@ custom:
         httpPath: /health
         interval: 10s
         failureThreshold: 3
+      # VPC for Redis access
+      privateNetworkId: "58fa41d0-f6a4-4b6f-8f65-b788563842c1"
