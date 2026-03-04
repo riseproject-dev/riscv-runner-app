@@ -3,9 +3,9 @@ from waitress import serve
 from handler import app
 from worker import start_worker
 
-# Set the logging level for all loggers to INFO
+# Set the logging level for all loggers to DEBUG
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s %(levelname)-8s %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
