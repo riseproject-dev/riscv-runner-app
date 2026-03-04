@@ -140,6 +140,20 @@ The following secrets must be configured in the repository settings (Settings > 
 | `REDIS_URL` | Redis connection string (e.g. `rediss://default:<password>@<host>:<port>`) |
 | `RISCV_RUNNER_SAMPLE_ACCESS_TOKEN` | PAT for triggering sample workflow on staging deploy |
 
+### Kubernetes RBAC
+
+The k8s user `gh-app` needs edit access and permission to list cluster nodes for capacity checks:
+
+```bash
+# Create the gh-app user
+kubeadm kubeconfig user --client-name=gh-app
+# Give the gh-app user edit access
+kubectl create clusterrolebinding gh-app-edit-binding --clusterrole=edit --user=gh-app
+# Give the gh-app user the ability to list nodes
+kubectl create clusterrole gh-app-node-reader --verb=list --resource=nodes
+kubectl create clusterrolebinding gh-app-node-reader --clusterrole=gh-app-node-reader --user=gh-app
+```
+
 ## Operations
 
 ### Cleanup terminated runner pods
