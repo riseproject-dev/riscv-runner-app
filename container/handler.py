@@ -29,6 +29,47 @@ ALLOWED_ORGS = {
 
 VALID_JOB_LABELS = {"rise", "ubuntu-24.04-riscv"}
 
+# --- Staging Proxy ---
+# Organizations whose webhooks are proxied from production to staging.
+STAGING_ORGS = {
+    152654596, # riseproject-dev
+}
+
+@app.before_request
+def proxy_to_staging():
+    if request.method != "POST" or request.path != "/":
+        return None
+
+    prod_url = os.environ.get("PROD_URL", "")
+    staging_url = os.environ.get("STAGING_URL", "")
+    if not prod_url or not staging_url:
+        return None
+
+    # Only proxy when running as the production instance
+    request_url = request.url_root.rstrip("/")
+    if request_url != prod_url.rstrip("/"):
+        return None
+
+    body = request.get_data(as_text=True)
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    org_id = payload.get("organization", {}).get("id")
+    if org_id not in STAGING_ORGS:
+        return None
+
+    import requests as req
+    resp = req.post(
+        staging_url,
+        data=request.get_data(),
+        headers={k: v for k, v in request.headers if k.lower() != "host"},
+        timeout=30,
+    )
+    logger.info("Proxied request for org %s to staging, status=%s", org_id, resp.status_code)
+    return make_response(resp.content, resp.status_code)
+
 def compute_signature(body, secret):
     return hmac.new(secret.encode('utf-8'), msg=body.encode('utf-8'), digestmod=hashlib.sha256)
 
