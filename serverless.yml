@@ -30,6 +30,13 @@ custom:
       env:
         PROD_URL: ${env:PROD_URL}
         STAGING_URL: ${env:STAGING_URL}
+      # Health check configuration
+      healthCheck:
+        type: http
+        httpPath: /health
+        interval: 10s
+        failureThreshold: 3
+
     gh-webhook-staging:
       registryImage: ${env:REGISTRY}/${env:IMAGE}:staging
       port: 8080
@@ -43,3 +50,9 @@ custom:
       env:
         PROD_URL: ${env:PROD_URL}
         STAGING_URL: ${env:STAGING_URL}
+      # Health check configuration
+      healthCheck:
+        type: http
+        httpPath: /health
+        interval: 10s
+        failureThreshold: 3
