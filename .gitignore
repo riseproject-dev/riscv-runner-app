@@ -4,6 +4,7 @@ node_modules
 
 __pycache__/
 package/
+.venv/
 *.py[cod]
 *$py.class
 *.so

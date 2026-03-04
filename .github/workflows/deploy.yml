@@ -80,8 +80,10 @@ jobs:
       - name: Trigger sample workflow
         if: steps.env.outputs.tag == 'staging'
         env:
-          GH_TOKEN: ${{ secrets.SAMPLE_REPO_TOKEN }}
+          GH_TOKEN: ${{ secrets.RISCV_RUNNER_SAMPLE_ACCESS_TOKEN }}
+          GH_REPO: riseproject-dev/riscv-runner-app-sample
+          GH_WORKFLOW: hello.yml
         run: |
-          gh workflow run hello.yml --repo riseproject-dev/riscv-runner-app-sample
+          gh workflow run ${GH_WORKFLOW} --repo ${GH_REPO}
           sleep 5
-          gh run watch $(gh run list --repo riseproject-dev/riscv-runner-app-sample --workflow hello.yml --limit 1 --json databaseId --jq '.[0].databaseId') --repo riseproject-dev/riscv-runner-app-sample --exit-status
+          gh run watch $(gh run list --repo ${GH_REPO} --workflow ${GH_WORKFLOW} --limit 1 --json databaseId --jq '.[0].databaseId') --repo ${GH_REPO} --exit-status

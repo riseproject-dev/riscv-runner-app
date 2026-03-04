@@ -207,7 +207,11 @@ def test_provision_runner_success(mock_core_v1_api, mock_create_client, mock_ini
     os.environ["K8S_NAMESPACE"] = "test-namespace"
     os.environ["RUNNER_IMAGE"] = "test-runner-image:latest"
 
-    result = provision_runner(jit_config, pod_name, "test-runner-image:latest", {"nodeSelector": {}})
+    payload = {
+        "repository": {"full_name": "riseproject-dev/sample"},
+        "workflow_job": {"html_url": "https://github.com/riseproject-dev/sample/actions/runs/1/job/1"},
+    }
+    result = provision_runner(payload, jit_config, pod_name, "test-runner-image:latest", {"nodeSelector": {}})
     assert "created successfully" in result
 
     mock_core_v1_api.assert_called_once()
@@ -231,7 +235,7 @@ def test_provision_runner_config_exception():
     saved = os.environ.pop("K8S_KUBECONFIG", None)
     try:
         with pytest.raises(kubernetes.config.ConfigException):
-            provision_runner("jit-config", "test-pod", "img", {})
+            provision_runner({}, "jit-config", "test-pod", "img", {})
     finally:
         if saved is not None:
             os.environ["K8S_KUBECONFIG"] = saved
@@ -242,5 +246,5 @@ def test_provision_runner_config_exception():
 def test_provision_runner_api_exception(mock_create_client, mock_init_config):
     """Test runner provisioning failure due to a generic API error."""
     with pytest.raises(Exception) as excinfo:
-        provision_runner("jit-config", "test-pod", "img", {})
+        provision_runner({}, "jit-config", "test-pod", "img", {})
     assert "Test API Error" == str(excinfo.value)
