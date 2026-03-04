@@ -38,6 +38,9 @@ jobs:
   deploy:
     needs: test
     runs-on: ubuntu-latest
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
 
