@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import ssl
 import time
 
 import redis
@@ -20,7 +21,9 @@ def connect():
     url = os.environ.get("REDIS_URL")
     if not url:
         raise RuntimeError("REDIS_URL is not configured.")
-    return redis.Redis.from_url(url, decode_responses=True)
+    if not url.startswith("rediss://"):
+        raise RuntimeError("REDIS_URL must start with rediss:// for secure connection.")
+    return redis.Redis.from_url(url, decode_responses=True, ssl_cert_reqs=ssl.CERT_NONE)
 
 
 def enqueue_job(r, job_id, payload, k8s_image, k8s_spec, job_labels):
