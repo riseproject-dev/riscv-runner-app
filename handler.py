@@ -141,19 +141,11 @@ def check_required_labels(payload):
         "nodeSelector": {
             "riseproject.dev/board": "scw-em-rv1",
         },
-        "resources": {
-            "requests": {
-                "cpu": "3000m", # The EM-RV1 board has 4 cores, but we leave some headroom for the kube-flannel and kube-proxy daemons
-            }
-        },
     }
     # SCW_EM_RV2_SPEC = {
     #     "nodeSelector": {
     #         "riseproject.dev/board": "scw-em-rv2",
     #     },
-    #     "resources": {
-    #         "cpu": "7000m",
-    #     }
     # }
 
     # Defaults to the Scaleway EM-RV1 board
@@ -311,7 +303,12 @@ def provision_runner(jit_config, pod_name, k8s_image, k8s_spec):
                     "command": ["/bin/bash", "-eux", "-o", "pipefail", "-c"],
                     "args": [
                         f"./run.sh --jitconfig {jit_config}"
-                    ]
+                    ],
+                    "resources": {
+                        "limits": {
+                            "riseproject.com/runner": "1",
+                        }
+                    }
                 }],
                 "restartPolicy": "Never"
             }

@@ -222,6 +222,7 @@ def test_provision_runner_success(mock_core_v1_api, mock_create_client, mock_ini
     assert len(args) == 1
     assert "--jitconfig" in args[0]
     assert jit_config in args[0]
+    assert pod_manifest['spec']['containers'][0]['resources'] == {"limits": {"riseproject.com/runner": "1"}}
 
 def test_provision_runner_config_exception():
     """Test runner provisioning failure due to missing K8S_KUBECONFIG."""
