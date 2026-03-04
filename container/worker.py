@@ -103,6 +103,22 @@ def reconcile_orphan_pods(r):
                     logger.error("Failed to clean up orphan pod %s: %s", pod_name, e)
 
 
+def dump_state_to_log(r):
+    """Log the current state of the queue and active runners."""
+    pending = redis_client.get_pending_jobs(r)
+    active_pods = redis_client.get_active_pods(r)
+    completed = redis_client.get_completed_jobs_with_pods(r)
+    logger.info("Queue state: pending=%d, active_pods=%d, completed_with_pods=%d",
+                len(pending), len(active_pods), len(completed))
+    for job_id in pending:
+        job = redis_client.get_job(r, job_id)
+        logger.info("  pending job %s: status=%s", job_id, job.get("status") if job else "missing")
+    for pod_name in active_pods:
+        logger.info("  active pod: %s", pod_name)
+    for job_id, pod_name in completed:
+        logger.info("  completed job %s: pod=%s", job_id, pod_name)
+
+
 def worker_loop(r):
     """Main worker loop — polls Redis and manages runner lifecycle."""
     while True:
@@ -110,6 +126,7 @@ def worker_loop(r):
             provision_pending_jobs(r)
             cleanup_completed_jobs(r)
             reconcile_orphan_pods(r)
+            dump_state_to_log(r)
         except Exception as e:
             logger.error("Worker error: %s", e)
 
