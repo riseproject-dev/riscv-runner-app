@@ -76,3 +76,12 @@ jobs:
 
       - name: Health check
         run: python3 ./bin/check-health.py ${{ steps.env.outputs.tag == 'staging' && '--staging' || '' }}
+
+      - name: Trigger sample workflow
+        if: steps.env.outputs.tag == 'staging'
+        env:
+          GH_TOKEN: ${{ secrets.SAMPLE_REPO_TOKEN }}
+        run: |
+          gh workflow run hello.yml --repo riseproject-dev/riscv-runner-app-sample
+          sleep 5
+          gh run watch $(gh run list --repo riseproject-dev/riscv-runner-app-sample --workflow hello.yml --limit 1 --json databaseId --jq '.[0].databaseId') --repo riseproject-dev/riscv-runner-app-sample --exit-status
