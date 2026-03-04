@@ -283,7 +283,7 @@ def init_k8s_config():
         )
     return yaml.safe_load(kubeconfig)
 
-def provision_runner(jit_config, pod_name, k8s_image, k8s_spec):
+def provision_runner(payload, jit_config, pod_name, k8s_image, k8s_spec):
     """Provision a new runner in a Kubernetes pod."""
     with k8s.config.new_client_from_config_dict(init_k8s_config()) as client:
         api = k8s.client.CoreV1Api(client)
@@ -315,7 +315,9 @@ def provision_runner(jit_config, pod_name, k8s_image, k8s_spec):
         }
 
         api.create_namespaced_pod(body=pod_manifest, namespace=namespace)
-        logger.info("Provisioned runner pod %s in namespace %s (image=%s)", pod_name, namespace, image)
+        repo = payload.get("repository", {}).get("full_name")
+        job_url = payload.get("workflow_job", {}).get("html_url")
+        logger.info("Provisioned runner pod %s in namespace %s (image=%s) for repo=%s job=%s", pod_name, namespace, image, repo, job_url)
         return f"Pod {pod_name} created successfully."
 
 @app.route("/health", methods=['GET'])
@@ -331,4 +333,4 @@ def webhook():
     installation_token = authenticate_app_as_organization(payload)
     runner_group_id = ensure_runner_group(payload, installation_token)
     jit_config, pod_name = create_jit_runner_config(payload, installation_token, runner_group_id, job_labels)
-    return provision_runner(jit_config, pod_name, k8s_image, k8s_spec)
+    return provision_runner(payload, jit_config, pod_name, k8s_image, k8s_spec)
