@@ -15,8 +15,6 @@ package:
     - "!.gitignore"
     - "!.git/**"
 
-singleSource: false
-
 custom:
   containers:
     gh-webhook:
@@ -28,6 +26,7 @@ custom:
         GHAPP_WEBHOOK_SECRET: ${env:GHAPP_WEBHOOK_SECRET}
         GHAPP_PRIVATE_KEY: ${env:GHAPP_PRIVATE_KEY}
         K8S_KUBECONFIG: ${env:K8S_KUBECONFIG}
+        REDIS_URL: ${env:REDIS_URL}
     gh-webhook-staging:
       registryImage: rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/gh-webhook:staging
       port: 8080
@@ -37,3 +36,4 @@ custom:
         GHAPP_WEBHOOK_SECRET: ${env:GHAPP_WEBHOOK_SECRET}
         GHAPP_PRIVATE_KEY: ${env:GHAPP_PRIVATE_KEY}
         K8S_KUBECONFIG: ${env:K8S_KUBECONFIG}
+        REDIS_URL: ${env:REDIS_URL}

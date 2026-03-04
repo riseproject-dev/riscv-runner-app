@@ -1,6 +1,7 @@
 import logging
 from waitress import serve
 from handler import app
+from worker import start_worker
 
 # Set the logging level for all loggers to INFO
 logging.basicConfig(
@@ -11,6 +12,8 @@ logging.basicConfig(
 
 HOST = "0.0.0.0"
 PORT = 8080
+
+start_worker()
 
 print(f"Starting server on http://{HOST}:{PORT}")
 serve(app, host=HOST, port=PORT)

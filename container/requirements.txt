@@ -1,5 +1,6 @@
 jwt
 kubernetes
+redis
 requests
 waitress
 Flask==3.1.2

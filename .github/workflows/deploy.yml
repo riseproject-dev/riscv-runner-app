@@ -29,8 +29,9 @@ jobs:
           python -m venv .venv
           source .venv/bin/activate
           pip install --upgrade pip
+          pip install -r container/requirements.txt
           pip install -r requirements-dev.txt
-          PYTHONPATH=${{ github.workspace }} pytest
+          PYTHONPATH=${{ github.workspace }}/container pytest
 
   deploy:
     needs: test
@@ -59,7 +60,7 @@ jobs:
 
       - name: Build and push Docker image
         run: |
-          docker buildx build --platform linux/amd64 -t ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ steps.env.outputs.tag }} --push .
+          docker buildx build --platform linux/amd64 -t ${{ env.REGISTRY }}/${{ env.IMAGE }}:${{ steps.env.outputs.tag }} --push container/
 
       - uses: actions/setup-node@v4
         with:
@@ -73,6 +74,7 @@ jobs:
           GHAPP_WEBHOOK_SECRET: ${{ secrets.GHAPP_WEBHOOK_SECRET }}
           GHAPP_PRIVATE_KEY: ${{ secrets.GHAPP_PRIVATE_KEY }}
           K8S_KUBECONFIG: ${{ secrets.K8S_KUBECONFIG }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
 
       - name: Health check
         run: python3 ./bin/check-health.py ${{ steps.env.outputs.tag == 'staging' && '--staging' || '' }}
