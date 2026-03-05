@@ -11,6 +11,12 @@ import yaml
 logger = logging.getLogger(__name__)
 
 
+PROD = os.environ["PROD"].lower() == "true"
+PROD_URL = os.environ["PROD_URL"]
+STAGING_URL = os.environ["STAGING_URL"]
+
+K8S_NAMESPACE = "default" if PROD else "staging"
+
 class RunnerError(Exception):
     """Exception raised during runner provisioning."""
     def __init__(self, message):
@@ -196,7 +202,7 @@ def provision_runner(payload, jit_config, pod_name, k8s_image, k8s_spec):
             }
         }
 
-        api.create_namespaced_pod(body=pod_manifest, namespace="default")
+        api.create_namespaced_pod(body=pod_manifest, namespace=K8S_NAMESPACE)
         repo = payload.get("repository", {}).get("full_name")
         job_url = payload.get("workflow_job", {}).get("html_url")
         logger.info("Provisioned runner pod %s for repo=%s, image=%s, job=%s", pod_name, repo, image, job_url)
@@ -208,7 +214,7 @@ def delete_pod(pod_name):
     with init_k8s_client() as client:
         api = k8s.client.CoreV1Api(client)
         try:
-            api.delete_namespaced_pod(name=pod_name, namespace="default")
+            api.delete_namespaced_pod(name=pod_name, namespace=K8S_NAMESPACE)
             logger.info("Deleted runner pod %s", pod_name)
             return f"Pod {pod_name} deleted successfully."
         except k8s.client.exceptions.ApiException as e:
@@ -225,17 +231,17 @@ def has_available_slot(node_selector):
 
         nodes = api.list_node()
         matching_nodes = [
-            n for n in nodes.items
-            if all(n.metadata.labels.get(k) == v for k, v in node_selector.items())
+            node for node in nodes.items
+            if all(node.metadata.labels.get(k) == v for k, v in node_selector.items())
         ]
         total = sum(
-            int(n.status.allocatable.get("riseproject.com/runner", "0"))
-            for n in matching_nodes
+            int(node.status.allocatable.get("riseproject.com/runner", "0"))
+            for node in matching_nodes
         )
 
         # Count active pods on matching nodes
         pods = api.list_namespaced_pod(
-            namespace="default", label_selector="app=rise-riscv-runner"
+            namespace=K8S_NAMESPACE, label_selector="app=rise-riscv-runner"
         )
         active = sum(
             1 for p in pods.items
@@ -253,6 +259,6 @@ def list_pods():
     with init_k8s_client() as client:
         api = k8s.client.CoreV1Api(client)
         pods = api.list_namespaced_pod(
-            namespace="default", label_selector="app=rise-riscv-runner"
+            namespace=K8S_NAMESPACE, label_selector="app=rise-riscv-runner"
         )
         return pods.items

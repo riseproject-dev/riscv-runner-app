@@ -11,12 +11,6 @@ app = Flask(__name__)
 
 logger = logging.getLogger(__name__)
 
-
-PROD = os.environ["PROD"].lower() == "true"
-PROD_URL = os.environ["PROD_URL"]
-STAGING_URL = os.environ["STAGING_URL"]
-
-
 class WebhookError(Exception):
     """Exception raised during webhook processing."""
     def __init__(self, status_code, message):
@@ -43,6 +37,8 @@ STAGING_ORGS = {
 
 @app.before_request
 def proxy_to_staging():
+    from runner import PROD, STAGING_URL
+
     if not PROD:
         logger.debug("Proxy skipped: not on production")
         return
