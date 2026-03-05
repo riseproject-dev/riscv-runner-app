@@ -22,6 +22,11 @@ class WebhookError(Exception):
 def handle_webhook_error(e):
     return make_response(e.message, e.status_code)
 
+@app.after_request
+def log_request(response):
+    logger.info("%s %s %s", request.method, request.path, response.status_code)
+    return response
+
 # --- Access Control ---
 ALLOWED_ORGS = {
     152654596, # riseproject-dev
