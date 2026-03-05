@@ -160,7 +160,7 @@ def worker_loop(r):
             reconcile_orphan_pods(r)
             dump_state_to_log(r)
         except Exception as e:
-            logger.error("Worker error: %s", e)
+            logger.error("Worker error: %s\n%s", e, e.format_exc())
 
         with queue_event:
             queue_event.wait(timeout=POLL_INTERVAL)
