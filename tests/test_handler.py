@@ -16,6 +16,10 @@ mock_worker.queue_event = threading.Condition(lock=mock_worker.queue_lock)
 sys.modules["redis_client"] = mock_redis_client
 sys.modules["worker"] = mock_worker
 
+os.environ.setdefault("PROD", "false")
+os.environ.setdefault("PROD_URL", "https://prod.example.com")
+os.environ.setdefault("STAGING_URL", "https://staging.example.com")
+
 from handler import (
     ALLOWED_ORGS,
     WebhookError,
