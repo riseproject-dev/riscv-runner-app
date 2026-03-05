@@ -11,11 +11,8 @@ import yaml
 logger = logging.getLogger(__name__)
 
 
-PROD = os.environ["PROD"].lower() == "true"
-PROD_URL = os.environ["PROD_URL"]
-STAGING_URL = os.environ["STAGING_URL"]
+from constants import *
 
-K8S_NAMESPACE = "default" if PROD else "staging"
 
 class RunnerError(Exception):
     """Exception raised during runner provisioning."""
@@ -65,33 +62,30 @@ def get_installation_access_token(jwt_token, installation_id, repository_id):
         raise RunnerError(error)
 
 
+@functools.lru_cache(maxsize=1)
+def init_ghapp_private_key():
+    private_key = jwt.jwk_from_pem(GHAPP_PRIVATE_KEY.encode('utf-8'))
+    assert private_key, "Failed to load private key from GHAPP_PRIVATE_KEY"
+
+    return private_key
+
+
 def authenticate_app(payload):
     """Authenticate the app as the organization and get an installation token."""
-    private_key = os.environ.get("GHAPP_PRIVATE_KEY")
-    if not private_key:
-        raise RunnerError("GHAPP_PRIVATE_KEY is not configured.")
 
-    app_id = 2167633  # https://github.com/apps/rise-risc-v-runner
-    private_key = jwt.jwk_from_pem(private_key.encode('utf-8'))
+    installation_id = payload["installation"]["id"]
+    assert installation_id, "Installation ID must be provided in payload"
 
-    if not private_key:
-        raise RunnerError("GHAPP_PRIVATE_KEY is not a valid PEM file.")
+    repo_id = payload["repository"]["id"]
+    assert repo_id, "Repository ID must be provided in payload"
 
-    installation_id = payload.get("installation", {}).get("id")
-    if not installation_id:
-        raise RunnerError("Missing installation ID in payload")
-
-    repo_id = payload.get("repository", {}).get("id")
-    if not repo_id:
-        raise RunnerError("Missing repository ID in payload")
-
-    jwt_token = generate_jwt(app_id, private_key)
+    jwt_token = generate_jwt(GHAPP_ID, init_ghapp_private_key())
     return get_installation_access_token(jwt_token, installation_id, repo_id)
 
 
 def ensure_runner_group(payload, installation_token, runner_group_name):
     """Ensure the runner group exists and return its ID."""
-    org_login = payload.get("organization", {}).get("login")
+    org_login = payload["repository"]["owner"]["login"]
     if not org_login:
         raise RunnerError("Missing organization login in payload")
 
@@ -135,11 +129,11 @@ def ensure_runner_group(payload, installation_token, runner_group_name):
 
 def create_jit_runner_config(payload, installation_token, runner_group_id, job_labels):
     """Create a JIT runner configuration for a new ephemeral runner."""
-    org_login = payload.get("organization", {}).get("login")
+    org_login = payload["repository"]["owner"]["login"]
     if not org_login:
         raise RunnerError("Missing organization login in payload")
 
-    job_id = payload.get("workflow_job", {}).get("id")
+    job_id = payload["workflow_job"]["id"]
     if not job_id:
         raise RunnerError("Missing workflow_job id in payload")
 
@@ -182,7 +176,7 @@ def provision_runner(payload, jit_config, pod_name, k8s_image, k8s_spec):
                 "name": pod_name,
                 "labels": {
                     "app": "rise-riscv-runner",
-                    "riseproject.com/job_id": str(payload.get("workflow_job", {}).get("id", "")),
+                    "riseproject.com/job_id": str(payload["workflow_job"]["id"]),
                 },
             },
             "spec": {
@@ -205,8 +199,8 @@ def provision_runner(payload, jit_config, pod_name, k8s_image, k8s_spec):
         }
 
         api.create_namespaced_pod(body=pod_manifest, namespace=K8S_NAMESPACE)
-        repo = payload.get("repository", {}).get("full_name")
-        job_url = payload.get("workflow_job", {}).get("html_url")
+        repo = payload["repository"]["full_name"]
+        job_url = payload["workflow_job"]["html_url"]
         logger.info("Provisioned runner pod %s for repo=%s, image=%s, job=%s", pod_name, repo, image, job_url)
         return f"Pod {pod_name} created successfully."
 

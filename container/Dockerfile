@@ -9,6 +9,6 @@ RUN pip3 install --no-cache -r requirements.txt --target .
 ENV PATH="/app/bin:${PATH}"
 ENV PYTHONPATH="/app"
 
-COPY handler.py serve.py runner.py redis_client.py worker.py ./
+COPY handler.py serve.py runner.py redis_client.py worker.py constants.py ./
 
 CMD [ "python3", "serve.py" ]

@@ -1,14 +1,14 @@
+import functools
 import json
 import logging
-import os
+import redis
 import ssl
 import time
 
-import redis
+from constants import *
 
 logger = logging.getLogger(__name__)
 
-from runner import PROD
 
 ENV_PREFIX = "prod" if PROD else "staging"
 PENDING_QUEUE = f"{ENV_PREFIX}:jobs:pending"
@@ -18,15 +18,10 @@ ACTIVE_JOBS = f"{ENV_PREFIX}:jobs:active"
 def job_key(job_id):
     return f"{ENV_PREFIX}:job:{job_id}"
 
-
+@functools.lru_cache(maxsize=1)
 def connect():
     """Create a Redis connection from the REDIS_URL environment variable."""
-    url = os.environ.get("REDIS_URL")
-    if not url:
-        raise RuntimeError("REDIS_URL is not configured.")
-    if not url.startswith("rediss://"):
-        raise RuntimeError("REDIS_URL must start with rediss:// for secure connection.")
-    return redis.Redis.from_url(url, decode_responses=True, ssl_cert_reqs=ssl.CERT_NONE)
+    return redis.Redis.from_url(REDIS_URL, decode_responses=True, ssl_cert_reqs=ssl.CERT_NONE)
 
 
 def enqueue_job(r, job_id, payload, k8s_image, k8s_spec, job_labels):

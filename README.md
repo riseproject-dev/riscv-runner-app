@@ -74,6 +74,7 @@ The app runs as a Flask server with a background worker thread, deployed as a Sc
 
 | File | Purpose |
 |------|---------|
+| `container/constants.py` | Environment configuration — reads env vars and exports constants used across modules |
 | `container/handler.py` | Flask webhook handler — validates requests and enqueues/completes jobs in Redis |
 | `container/worker.py` | Background worker thread — provisions pods, cleans up, reconciles |
 | `container/runner.py` | GitHub API (auth, runner groups, JIT config) and k8s pod provisioning/deletion |

@@ -2,10 +2,11 @@ import hashlib
 import hmac
 import json
 import logging
-import os
 import requests
 
 from flask import Flask, request, make_response
+
+from constants import *
 
 app = Flask(__name__)
 
@@ -42,8 +43,6 @@ STAGING_ORGS = {
 
 @app.before_request
 def proxy_to_staging():
-    from runner import PROD, STAGING_URL
-
     if not PROD:
         return
 
@@ -58,7 +57,7 @@ def proxy_to_staging():
         logger.debug("Proxy skipped: invalid JSON payload")
         return
 
-    org_id = payload.get("organization", {}).get("id")
+    org_id = payload["repository"]["owner"]["id"]
     if org_id not in STAGING_ORGS:
         logger.debug("Proxy skipped: org %s not in STAGING_ORGS", org_id)
         return
@@ -92,12 +91,8 @@ def verify_signature(body, signature, secret):
 
 def check_webhook_signature(headers, body):
     """Verify the webhook signature."""
-    secret = os.environ.get("GHAPP_WEBHOOK_SECRET")
-    if not secret:
-        raise WebhookError(500, "GHAPP_WEBHOOK_SECRET is not configured.")
-
     signature = headers.get("X-Hub-Signature-256")
-    is_valid, message = verify_signature(body, signature, secret)
+    is_valid, message = verify_signature(body, signature, GHAPP_WEBHOOK_SECRET)
 
     if not is_valid:
         logger.warning("Webhook signature verification failed: %s", message)
@@ -112,22 +107,22 @@ def check_webhook_event(body):
     except json.JSONDecodeError:
         raise WebhookError(400, "Invalid JSON payload")
 
-    action = payload.get("action")
+    action = payload["action"]
     if action not in ("queued", "completed"):
         logger.debug("Ignoring action: %s", action)
         raise WebhookError(200, f"Ignoring action: {action}")
 
-    job = payload.get("workflow_job", {})
+    job = payload["workflow_job"]
     logger.info("Received %s workflow_job id=%s name=%s repo=%s labels=%s",
                 action, job.get("id"), job.get("name"),
-                payload.get("repository", {}).get("full_name"),
+                payload["repository"]["full_name"],
                 job.get("labels"))
 
     return payload, action
 
 def check_required_labels(payload):
     """Check that the workflow job has the required runs-on labels."""
-    job_labels = set(payload.get("workflow_job", {}).get("labels", []))
+    job_labels = set(payload["workflow_job"]["labels"])
 
     if any(label not in VALID_JOB_LABELS for label in job_labels):
         logger.debug("Ignoring job: contains unsupported labels (got %s)", sorted(job_labels))
@@ -173,16 +168,16 @@ def check_required_labels(payload):
 
 def authorize_organization(payload):
     """Authorize the organization."""
-    org_id = payload.get("organization", {}).get("id")
+    org_id = payload["repository"]["owner"]["id"]
     if not org_id:
         raise WebhookError(400, "Missing organization ID in payload")
 
     if org_id not in ALLOWED_ORGS:
         logger.warning("Organization %s (%s) not authorized",
-                     payload.get("organization", {}).get("login"), org_id)
+                     payload["repository"]["owner"]["login"], org_id)
         raise WebhookError(200, f"Organization {org_id} not authorized.")
 
-    logger.debug("Organization %s authorized", payload.get("organization", {}).get("login"))
+    logger.debug("Organization %s authorized", payload["repository"]["owner"]["login"])
     return org_id
 
 @app.route("/health", methods=['GET'])
@@ -204,7 +199,7 @@ def webhook():
         # This should be removed at some point as all organizations should be allowed
         authorize_organization(payload)
 
-        job_id = payload.get("workflow_job", {}).get("id")
+        job_id = payload["workflow_job"]["id"]
         if not job_id:
             raise WebhookError(400, "Missing workflow_job id in payload")
 
@@ -220,7 +215,7 @@ def webhook():
             return f"Job {job_id} already enqueued."
 
     elif action == "completed":
-        job_id = payload.get("workflow_job", {}).get("id")
+        job_id = payload["workflow_job"]["id"]
         if not job_id:
             raise WebhookError(400, "Missing workflow_job id in payload")
 

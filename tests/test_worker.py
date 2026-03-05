@@ -1,10 +1,5 @@
 import json
-import os
 from unittest.mock import patch, MagicMock
-
-os.environ.setdefault("PROD", "false")
-os.environ.setdefault("PROD_URL", "https://prod.example.com")
-os.environ.setdefault("STAGING_URL", "https://staging.example.com")
 
 from worker import (
     provision_pending_jobs,
