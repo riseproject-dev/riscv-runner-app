@@ -25,7 +25,13 @@ def handle_webhook_error(e):
 
 @app.after_request
 def log_request(response):
-    logger.info("%s %s %s", request.method, request.path, response.status_code)
+    if request.method == "GET" and request.path == "/health":
+        pass # skip logging health checks
+    elif response.status_code == 200:
+        pass # skip logging successful requests to reduce noise
+    else:
+        logger.info("%s %s %s", request.method, request.path, response.status_code)
+
     return response
 
 # --- Access Control ---
