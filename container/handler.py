@@ -36,7 +36,10 @@ def log_request(response):
 
 # --- Access Control ---
 ALLOWED_ORGS = {
+    # Organizations
     152654596, # riseproject-dev
+    # Individuals
+    660779, # luhenry
 }
 
 VALID_JOB_LABELS = {"rise", "ubuntu-24.04-riscv"}
