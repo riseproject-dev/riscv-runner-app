@@ -193,7 +193,7 @@ def health():
 def webhook():
     import redis_client
     from worker import queue_lock, queue_event
-    from runner import delete_pod
+    from runner import delete_pod, find_pod_by_job_id
 
     body = check_webhook_signature(request.headers, request.get_data(as_text=True))
     payload, action = check_webhook_event(body)
@@ -226,14 +226,18 @@ def webhook():
 
         r = redis_client.connect()
         with queue_lock:
-            prev_status, pod_name = redis_client.complete_job(r, job_id)
+            prev_status = redis_client.complete_job(r, job_id)
 
         if prev_status is None:
-            # Job not in Redis — attempt direct pod deletion as fallback
-            pod_name = f"rise-riscv-runner-workflow-{job_id}"
-            logger.warning("Job %s not found in Redis, attempting direct pod deletion: %s", job_id, pod_name)
-            delete_pod(pod_name)
-            return f"Job {job_id} not found, fallback pod deletion attempted."
+            # Job not in Redis — search k8s by job_id label as fallback
+            pod = find_pod_by_job_id(job_id)
+            if pod:
+                logger.warning("Job %s not found in Redis, deleting pod %s found by label", job_id, pod.metadata.name)
+                delete_pod(pod)
+                return f"Job {job_id} not found in Redis, pod {pod.metadata.name} deleted."
+            else:
+                logger.warning("Job %s not found in Redis or k8s", job_id)
+                return f"Job {job_id} not found."
 
         return f"Job {job_id} marked completed (was {prev_status})."
 

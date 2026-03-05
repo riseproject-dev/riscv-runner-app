@@ -8,12 +8,15 @@ import redis
 
 logger = logging.getLogger(__name__)
 
-PENDING_QUEUE = "jobs:pending"
-ACTIVE_PODS = "pods:active"
+from runner import PROD
+
+ENV_PREFIX = "prod" if PROD else "staging"
+PENDING_QUEUE = f"{ENV_PREFIX}:jobs:pending"
+ACTIVE_JOBS = f"{ENV_PREFIX}:jobs:active"
 
 
 def job_key(job_id):
-    return f"job:{job_id}"
+    return f"{ENV_PREFIX}:job:{job_id}"
 
 
 def connect():
@@ -60,10 +63,9 @@ def complete_job(r, job_id):
 
     if not data:
         logger.debug("Job %s not found in Redis", job_id)
-        return None, None
+        return None
 
     status = data.get("status")
-    pod_name = data.get("pod_name")
 
     pipe = r.pipeline()
     if status == "pending":
@@ -76,11 +78,11 @@ def complete_job(r, job_id):
         # Mark completed — worker will clean up the pod
         pipe.hset(key, "status", "completed")
         pipe.execute()
-        logger.info("Job %s marked completed (was %s, pod=%s)", job_id, status, pod_name)
+        logger.info("Job %s marked completed (was %s)", job_id, status)
     else:
         logger.info("Job %s already in status %s, ignoring complete", job_id, status)
 
-    return status, pod_name
+    return status
 
 
 def pick_job(r, job_id):
@@ -103,9 +105,8 @@ def finish_provisioning(r, job_id, pod_name):
         "provisioned_at": str(time.time()),
     })
     pipe.zrem(PENDING_QUEUE, str(job_id))
-    pipe.sadd(ACTIVE_PODS, pod_name)
+    pipe.sadd(ACTIVE_JOBS, job_id)
     pipe.execute()
-    logger.info("Job %s now running, pod=%s", job_id, pod_name)
 
 
 def requeue_job(r, job_id):
@@ -128,31 +129,31 @@ def get_job(r, job_id):
 def get_completed_jobs_with_pods(r):
     """Return job IDs that are completed and have a pod_name set."""
     results = []
-    for pod_name in r.smembers(ACTIVE_PODS):
+    for job_id in r.smembers(ACTIVE_JOBS):
         # Scan all jobs — in practice we'd maintain a reverse index,
         # but with small job counts this is fine
         pass
 
     # Alternative: scan all job keys
-    for key in r.scan_iter(match="job:*"):
+    for key in r.scan_iter(match=f"{ENV_PREFIX}:job:*"):
         data = r.hgetall(key)
         if data.get("status") == "completed" and data.get("pod_name"):
-            job_id = key.split(":", 1)[1]
+            job_id = key.split(":", 2)[2]
             results.append((job_id, data["pod_name"]))
 
     return results
 
 
-def cleanup_job(r, job_id, pod_name):
-    """Remove a completed job and its pod from tracking."""
+def cleanup_job(r, job_id):
+    """Remove a completed job from tracking."""
     key = job_key(job_id)
     pipe = r.pipeline()
-    pipe.srem(ACTIVE_PODS, pod_name)
+    pipe.srem(ACTIVE_JOBS, job_id)
     pipe.delete(key)
     pipe.execute()
-    logger.debug("Cleaned up job %s, pod %s", job_id, pod_name)
+    logger.debug("Cleaned up job %s", job_id)
 
 
-def get_active_pods(r):
-    """Return the set of all active pod names."""
-    return r.smembers(ACTIVE_PODS)
+def get_active_jobs(r):
+    """Return the set of all active job IDs."""
+    return r.smembers(ACTIVE_JOBS)

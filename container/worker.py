@@ -11,6 +11,7 @@ from runner import (
     delete_pod,
     has_available_slot,
     list_pods,
+    find_pod_by_job_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,6 +59,8 @@ def provision_pending_jobs(r):
             with queue_lock:
                 redis_client.finish_provisioning(r, job_id, pod_name)
 
+            logger.info("Job %s now running, pod=%s", job_id, pod_name)
+
         except Exception as e:
             logger.error("Failed to provision job %s: %s", job_id, e)
             with queue_lock:
@@ -69,32 +72,41 @@ def cleanup_completed_jobs(r):
     with queue_lock:
         completed = redis_client.get_completed_jobs_with_pods(r)
 
-    for job_id, pod_name in completed:
-        try:
-            delete_pod(pod_name)
-        except Exception as e:
-            logger.error("Failed to delete pod %s for job %s: %s", pod_name, job_id, e)
-            continue
+    for job_id in completed:
+        pod = find_pod_by_job_id(job_id)
+        if pod:
+            try:
+                delete_pod(pod)
+            except Exception as e:
+                logger.error("Failed to delete pod %s for job %s: %s", pod.metadata.name, job_id, e)
+                continue
+        else:
+            logger.debug("No pod found for completed job %s", job_id)
 
         with queue_lock:
-            redis_client.cleanup_job(r, job_id, pod_name)
+            redis_client.cleanup_job(r, job_id)
 
 
 def reconcile_orphan_pods(r):
     """Detect and clean up pods not tracked in Redis."""
     pods = list_pods()
-    tracked_pods = redis_client.get_active_pods(r)
+    tracked_job_ids = redis_client.get_active_jobs(r)
     for pod in pods:
         pod_name = pod.metadata.name
-        pod_annotations = pod.metadata.annotations or {}
+        pod_labels = pod.metadata.labels or {}
+        pod_job_id = pod_labels.get("riseproject.com/job_id")
+        if not pod_job_id:
+            logger.debug("Pod %s missing riseproject.com/job_id label, skipping", pod_name)
+            continue
+
         logger.debug("Checking pod %s for orphan status", pod_name)
-        if pod_name not in tracked_pods:
+        if pod_job_id not in tracked_job_ids:
             logger.debug("Found orphan pod %s not tracked in Redis", pod_name)
             # Check if pod is completed/failed — only clean up finished orphans
             if pod.status.phase in ("Succeeded", "Failed"):
                 logger.warning("Cleaning up orphan pod %s (phase=%s)", pod_name, pod.status.phase)
                 try:
-                    delete_pod(pod_name)
+                    delete_pod(pod)
                 except Exception as e:
                     logger.error("Failed to clean up orphan pod %s: %s", pod_name, e)
             elif pod.status.phase in ("Unknown"):
@@ -107,16 +119,16 @@ def reconcile_orphan_pods(r):
             if pod.status.phase in ("Succeeded", "Failed"):
                 logger.warning("Pod %s is tracked in Redis but in %s phase, marking completed in Redis", pod_name, pod.status.phase)
 
-                job_id = pod_annotations.get("riseproject.com/job_id")
+                job_id = pod_labels.get("riseproject.com/job_id")
                 if not job_id:
-                    logger.error("Pod %s missing riseproject.com/job_id annotation, cannot mark completed in Redis", pod_name)
+                    logger.error("Pod %s missing riseproject.com/job_id label, cannot mark completed in Redis", pod_name)
                     continue
                 # First mark completed in Redis
                 with queue_lock:
                     redis_client.complete_job(r, job_id)
                 # Then delete the pod
                 try:
-                    delete_pod(pod_name)
+                    delete_pod(pod)
                 except Exception as e:
                     logger.error("Failed to delete pod %s during reconciliation: %s", pod_name, e)
 
@@ -124,17 +136,19 @@ def reconcile_orphan_pods(r):
 def dump_state_to_log(r):
     """Log the current state of the queue and active runners."""
     pending = redis_client.get_pending_jobs(r)
-    active_pods = redis_client.get_active_pods(r)
+    active = redis_client.get_active_jobs(r)
     completed = redis_client.get_completed_jobs_with_pods(r)
-    logger.info("Queue state: pending=%d, active_pods=%d, completed_with_pods=%d",
-                len(pending), len(active_pods), len(completed))
+    logger.info("Queue state: pending=%d, active=%d, completed=%d",
+                len(pending), len(active), len(completed))
     for job_id in pending:
         job = redis_client.get_job(r, job_id)
         logger.info("  pending job %s: status=%s", job_id, job.get("status") if job else "missing")
-    for pod_name in active_pods:
-        logger.info("  active pod: %s", pod_name)
-    for job_id, pod_name in completed:
-        logger.info("  completed job %s: pod=%s", job_id, pod_name)
+    for job_id in active:
+        pod = find_pod_by_job_id(job_id)
+        logger.info("  active job %s: (pod=%s, phase=%s)", job_id, pod.metadata.name if pod else "<not found>", pod.status.phase if pod else "<not found>")
+    for job_id in completed:
+        pod = find_pod_by_job_id(job_id)
+        logger.info("  completed job %s: (pod=%s, phase=%s)", job_id, pod.metadata.name if pod else "<not found>", pod.status.phase if pod else "<not found>")
 
 
 def worker_loop(r):

@@ -206,7 +206,10 @@ def test_delete_pod_success(mock_core_v1_api, mock_init_client):
     mock_api_instance = MagicMock()
     mock_core_v1_api.return_value = mock_api_instance
 
-    result = delete_pod("rise-riscv-runner-workflow-12345")
+    mock_pod = MagicMock()
+    mock_pod.metadata.name = "rise-riscv-runner-workflow-12345"
+
+    result = delete_pod(mock_pod)
     assert "deleted successfully" in result
     mock_api_instance.delete_namespaced_pod.assert_called_once_with(
         name="rise-riscv-runner-workflow-12345", namespace="staging"
@@ -226,5 +229,8 @@ def test_delete_pod_not_found(mock_core_v1_api, mock_init_client):
     mock_core_v1_api.return_value = mock_api_instance
     mock_api_instance.delete_namespaced_pod.side_effect = kubernetes.client.exceptions.ApiException(status=404)
 
-    result = delete_pod("rise-riscv-runner-workflow-12345")
+    mock_pod = MagicMock()
+    mock_pod.metadata.name = "rise-riscv-runner-workflow-12345"
+
+    result = delete_pod(mock_pod)
     assert "not found" in result

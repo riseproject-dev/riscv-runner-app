@@ -180,8 +180,10 @@ def provision_runner(payload, jit_config, pod_name, k8s_image, k8s_spec):
             "kind": "Pod",
             "metadata": {
                 "name": pod_name,
-                "labels": {"app": "rise-riscv-runner"},
-                "annotations": {"riseproject.com/job_id": str(payload.get("workflow_job", {}).get("id", ""))},
+                "labels": {
+                    "app": "rise-riscv-runner",
+                    "riseproject.com/job_id": str(payload.get("workflow_job", {}).get("id", "")),
+                },
             },
             "spec": {
                 **k8s_spec,
@@ -209,18 +211,19 @@ def provision_runner(payload, jit_config, pod_name, k8s_image, k8s_spec):
         return f"Pod {pod_name} created successfully."
 
 
-def delete_pod(pod_name):
-    """Delete a runner pod by name."""
+def delete_pod(pod):
+    """Delete a runner pod."""
+    assert pod, "Pod must be provided to delete it"
     with init_k8s_client() as client:
         api = k8s.client.CoreV1Api(client)
         try:
-            api.delete_namespaced_pod(name=pod_name, namespace=K8S_NAMESPACE)
-            logger.info("Deleted runner pod %s", pod_name)
-            return f"Pod {pod_name} deleted successfully."
+            api.delete_namespaced_pod(name=pod.metadata.name, namespace=K8S_NAMESPACE)
+            logger.info("Deleted runner pod %s", pod.metadata.name)
+            return f"Pod {pod.metadata.name} deleted successfully."
         except k8s.client.exceptions.ApiException as e:
             if e.status == 404:
-                logger.debug("Pod %s not found, already deleted", pod_name)
-                return f"Pod {pod_name} not found."
+                logger.debug("Pod %s not found, already deleted", pod.metadata.name)
+                return f"Pod {pod.metadata.name} not found."
             raise
 
 
@@ -262,3 +265,13 @@ def list_pods():
             namespace=K8S_NAMESPACE, label_selector="app=rise-riscv-runner"
         )
         return pods.items
+
+def find_pod_by_job_id(job_id):
+    """Find a runner pod by its job_id label. Returns the pod name or None."""
+    with init_k8s_client() as client:
+        api = k8s.client.CoreV1Api(client)
+        pods = api.list_namespaced_pod(
+            namespace=K8S_NAMESPACE,
+            label_selector=f"app=rise-riscv-runner,riseproject.com/job_id={job_id}",
+        )
+        return pods.items[0] if pods.items else None

@@ -1,20 +1,9 @@
 import os
-import sys
 import hmac
 import hashlib
 import json
-import threading
 import pytest
 from unittest.mock import patch, MagicMock
-
-# Mock redis_client and worker modules before importing handler,
-# so tests don't depend on the redis package.
-mock_redis_client = MagicMock()
-mock_worker = MagicMock()
-mock_worker.queue_lock = threading.Lock()
-mock_worker.queue_event = threading.Condition(lock=mock_worker.queue_lock)
-sys.modules["redis_client"] = mock_redis_client
-sys.modules["worker"] = mock_worker
 
 os.environ.setdefault("PROD", "false")
 os.environ.setdefault("PROD_URL", "https://prod.example.com")
@@ -114,7 +103,9 @@ def test_check_required_labels_unsupported():
     assert exc.value.status_code == 200
     assert "unsupported labels" in exc.value.message
 
-def test_webhook_queued_enqueues():
+@patch("redis_client.connect")
+@patch("redis_client.enqueue_job", return_value=True)
+def test_webhook_queued_enqueues(mock_enqueue, mock_connect):
     """Test that a queued webhook enqueues the job to Redis."""
     from handler import app
 
@@ -130,8 +121,7 @@ def test_webhook_queued_enqueues():
     body = json.dumps(payload)
     sig = "sha256=" + compute_signature(body, secret).hexdigest()
 
-    mock_redis_client.connect.return_value = MagicMock()
-    mock_redis_client.enqueue_job.return_value = True
+    mock_connect.return_value = MagicMock()
 
     with app.test_client() as client:
         resp = client.post("/", data=body, headers={
@@ -140,9 +130,12 @@ def test_webhook_queued_enqueues():
         })
         assert resp.status_code == 200
         assert b"enqueued" in resp.data
-        mock_redis_client.enqueue_job.assert_called_once()
+        mock_enqueue.assert_called_once()
 
-def test_webhook_completed_marks_complete():
+
+@patch("redis_client.connect")
+@patch("redis_client.complete_job", return_value="running")
+def test_webhook_completed_marks_complete(mock_complete, mock_connect):
     """Test that a completed webhook marks the job as completed in Redis."""
     from handler import app
 
@@ -158,8 +151,7 @@ def test_webhook_completed_marks_complete():
     body = json.dumps(payload)
     sig = "sha256=" + compute_signature(body, secret).hexdigest()
 
-    mock_redis_client.connect.return_value = MagicMock()
-    mock_redis_client.complete_job.return_value = ("running", "rise-riscv-runner-workflow-12345")
+    mock_connect.return_value = MagicMock()
 
     with app.test_client() as client:
         resp = client.post("/", data=body, headers={
@@ -168,4 +160,4 @@ def test_webhook_completed_marks_complete():
         })
         assert resp.status_code == 200
         assert b"completed" in resp.data
-        mock_redis_client.complete_job.assert_called_once()
+        mock_complete.assert_called_once()
