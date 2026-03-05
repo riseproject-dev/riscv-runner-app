@@ -28,6 +28,7 @@ custom:
         K8S_KUBECONFIG: ${env:K8S_KUBECONFIG}
         REDIS_URL: ${env:REDIS_URL}
       env:
+        PROD: "true"
         PROD_URL: ${env:PROD_URL}
         STAGING_URL: ${env:STAGING_URL}
       # Health check configuration
@@ -50,6 +51,7 @@ custom:
         K8S_KUBECONFIG: ${env:K8S_KUBECONFIG}
         REDIS_URL: ${env:REDIS_URL}
       env:
+        PROD: "false"
         PROD_URL: ${env:PROD_URL}
         STAGING_URL: ${env:STAGING_URL}
       # Health check configuration

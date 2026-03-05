@@ -11,6 +11,12 @@ app = Flask(__name__)
 
 logger = logging.getLogger(__name__)
 
+
+PROD = os.environ["PROD"].lower() == "true"
+PROD_URL = os.environ["PROD_URL"]
+STAGING_URL = os.environ["STAGING_URL"]
+
+
 class WebhookError(Exception):
     """Exception raised during webhook processing."""
     def __init__(self, status_code, message):
@@ -37,37 +43,30 @@ STAGING_ORGS = {
 
 @app.before_request
 def proxy_to_staging():
+    if not PROD:
+        logger.debug("Proxy skipped: not on production")
+        return
+
     if request.method != "POST" or request.path != "/":
-        return None
-
-    prod_url = os.environ.get("PROD_URL", "")
-    staging_url = os.environ.get("STAGING_URL", "")
-    if not prod_url or not staging_url:
-        logger.debug("Proxy skipped: PROD_URL or STAGING_URL not configured")
-        return None
-
-    # Only proxy when running as the production instance
-    request_url = request.url_root.rstrip("/")
-    if request_url != prod_url.rstrip("/"):
-        logger.debug("Proxy skipped: request_url=%s does not match prod_url=%s", request_url, prod_url)
-        return None
+        logger.debug("Proxy skipped: not a POST to / (method=%s, path=%s)", request.method, request.path)
+        return
 
     body = request.get_data(as_text=True)
     try:
         payload = json.loads(body)
     except (json.JSONDecodeError, TypeError):
         logger.debug("Proxy skipped: invalid JSON payload")
-        return None
+        return
 
     org_id = payload.get("organization", {}).get("id")
     if org_id not in STAGING_ORGS:
         logger.debug("Proxy skipped: org %s not in STAGING_ORGS", org_id)
-        return None
+        return
 
-    logger.debug("Proxying request for org %s to staging (%s)", org_id, staging_url)
+    logger.debug("Proxying request for org %s to staging (%s)", org_id, STAGING_URL)
 
     resp = requests.post(
-        staging_url,
+        STAGING_URL,
         data=request.get_data(),
         headers={k: v for k, v in request.headers if k.lower() != "host"},
         timeout=30,
