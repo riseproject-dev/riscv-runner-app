@@ -134,7 +134,7 @@ def get_completed_jobs_with_pods(r):
         data = r.hgetall(key)
         if data.get("status") == "completed" and data.get("pod_name"):
             job_id = key.split(":", 2)[2]
-            results.append((job_id, data["pod_name"]))
+            results.append(job_id)
 
     return results
 
