@@ -86,6 +86,7 @@ def reconcile_orphan_pods(r):
     tracked_pods = redis_client.get_active_pods(r)
     for pod in pods:
         pod_name = pod.metadata.name
+        pod_annotations = pod.metadata.annotations or {}
         logger.debug("Checking pod %s for orphan status", pod_name)
         if pod_name not in tracked_pods:
             logger.debug("Found orphan pod %s not tracked in Redis", pod_name)
@@ -100,6 +101,24 @@ def reconcile_orphan_pods(r):
                 logger.warning("Pod %s in Unknown phase, may require manual investigation", pod_name)
             else:
                 logger.warning("Pod %s in unexpected phase %s, skipping automatic cleanup", pod_name, pod.status.phase)
+        else:
+            logger.debug("Pod %s is tracked in Redis, checking if completed on k8s anyway", pod_name)
+            # Double-check if pod is completed on k8s but not marked completed in Redis, to handle missed webhooks
+            if pod.status.phase in ("Succeeded", "Failed"):
+                logger.warning("Pod %s is tracked in Redis but in %s phase, marking completed in Redis", pod_name, pod.status.phase)
+
+                job_id = pod_annotations.get("riseproject.com/job_id")
+                if not job_id:
+                    logger.error("Pod %s missing riseproject.com/job_id annotation, cannot mark completed in Redis", pod_name)
+                    continue
+                # First mark completed in Redis
+                with queue_lock:
+                    redis_client.complete_job(r, job_id)
+                # Then delete the pod
+                try:
+                    delete_pod(pod_name)
+                except Exception as e:
+                    logger.error("Failed to delete pod %s during reconciliation: %s", pod_name, e)
 
 
 def dump_state_to_log(r):

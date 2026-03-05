@@ -172,7 +172,11 @@ def provision_runner(payload, jit_config, pod_name, k8s_image, k8s_spec):
         pod_manifest = {
             "apiVersion": "v1",
             "kind": "Pod",
-            "metadata": {"name": pod_name, "labels": {"app": "rise-riscv-runner"}},
+            "metadata": {
+                "name": pod_name,
+                "labels": {"app": "rise-riscv-runner"},
+                "annotations": {"riseproject.com/job_id": str(payload.get("workflow_job", {}).get("id", ""))},
+            },
             "spec": {
                 **k8s_spec,
                 "containers": [{
