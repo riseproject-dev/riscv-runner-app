@@ -10,7 +10,7 @@ from runner import (
     create_jit_runner_config,
     provision_runner,
     delete_pod,
-    init_k8s_config,
+    init_k8s_client,
 )
 
 RUNNER_GROUP_NAME = "RISE RISC-V Runners"
@@ -131,13 +131,12 @@ def test_create_jit_runner_config(requests_mock):
     assert pod_name == "rise-riscv-runner-workflow-12345"
 
 
-@patch('runner.init_k8s_config', return_value={})
-@patch('runner.k8s.config.new_client_from_config_dict')
+@patch('runner.init_k8s_client')
 @patch('runner.k8s.client.CoreV1Api')
-def test_provision_runner_success(mock_core_v1_api, mock_create_client, mock_init_config):
+def test_provision_runner_success(mock_core_v1_api, mock_init_client):
     """Test successful runner provisioning with JIT config."""
     mock_api_client = MagicMock()
-    mock_create_client.return_value = mock_api_client
+    mock_init_client.return_value = mock_api_client
     mock_api_client.__enter__ = MagicMock(return_value=mock_api_client)
     mock_api_client.__exit__ = MagicMock(return_value=False)
 
@@ -172,7 +171,7 @@ def test_provision_runner_success(mock_core_v1_api, mock_create_client, mock_ini
 def test_provision_runner_config_exception():
     """Test runner provisioning failure due to missing K8S_KUBECONFIG."""
     import runner
-    runner.init_k8s_config.cache_clear()
+    runner.init_k8s_client.cache_clear()
     saved = os.environ.pop("K8S_KUBECONFIG", None)
     try:
         with pytest.raises(kubernetes.config.ConfigException):
@@ -180,25 +179,23 @@ def test_provision_runner_config_exception():
     finally:
         if saved is not None:
             os.environ["K8S_KUBECONFIG"] = saved
-            runner.init_k8s_config.cache_clear()
+            runner.init_k8s_client.cache_clear()
 
 
-@patch('runner.init_k8s_config', return_value={})
-@patch('runner.k8s.config.new_client_from_config_dict', side_effect=Exception("Test API Error"))
-def test_provision_runner_api_exception(mock_create_client, mock_init_config):
+@patch('runner.init_k8s_client', side_effect=Exception("Test API Error"))
+def test_provision_runner_api_exception(mock_init_client):
     """Test runner provisioning failure due to a generic API error."""
     with pytest.raises(Exception) as excinfo:
         provision_runner({}, "jit-config", "test-pod", "img", {})
     assert "Test API Error" == str(excinfo.value)
 
 
-@patch('runner.init_k8s_config', return_value={})
-@patch('runner.k8s.config.new_client_from_config_dict')
+@patch('runner.init_k8s_client')
 @patch('runner.k8s.client.CoreV1Api')
-def test_delete_pod_success(mock_core_v1_api, mock_create_client, mock_init_config):
+def test_delete_pod_success(mock_core_v1_api, mock_init_client):
     """Test successful deletion of a runner pod."""
     mock_api_client = MagicMock()
-    mock_create_client.return_value = mock_api_client
+    mock_init_client.return_value = mock_api_client
     mock_api_client.__enter__ = MagicMock(return_value=mock_api_client)
     mock_api_client.__exit__ = MagicMock(return_value=False)
 
@@ -212,13 +209,12 @@ def test_delete_pod_success(mock_core_v1_api, mock_create_client, mock_init_conf
     )
 
 
-@patch('runner.init_k8s_config', return_value={})
-@patch('runner.k8s.config.new_client_from_config_dict')
+@patch('runner.init_k8s_client')
 @patch('runner.k8s.client.CoreV1Api')
-def test_delete_pod_not_found(mock_core_v1_api, mock_create_client, mock_init_config):
+def test_delete_pod_not_found(mock_core_v1_api, mock_init_client):
     """Test deletion when pod is already gone."""
     mock_api_client = MagicMock()
-    mock_create_client.return_value = mock_api_client
+    mock_init_client.return_value = mock_api_client
     mock_api_client.__enter__ = MagicMock(return_value=mock_api_client)
     mock_api_client.__exit__ = MagicMock(return_value=False)
 

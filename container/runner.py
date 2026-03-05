@@ -19,15 +19,15 @@ class RunnerError(Exception):
 
 
 @functools.lru_cache(maxsize=1)
-def init_k8s_config():
-    """Load Kubernetes configuration from a kubeconfig env var.
+def init_k8s_client():
+    """Create a Kubernetes API client from a kubeconfig env var.
     Called once at startup; result is memoized."""
     kubeconfig = os.environ.get("K8S_KUBECONFIG")
     if not kubeconfig:
         raise k8s.config.ConfigException(
             "K8s not configured: K8S_KUBECONFIG must be set to a kubeconfig."
         )
-    return yaml.safe_load(kubeconfig)
+    return k8s.config.new_client_from_config_dict(yaml.safe_load(kubeconfig))
 
 
 def generate_jwt(app_id, private_key):
@@ -164,7 +164,7 @@ def create_jit_runner_config(payload, installation_token, runner_group_id, job_l
 
 def provision_runner(payload, jit_config, pod_name, k8s_image, k8s_spec):
     """Provision a new runner in a Kubernetes pod."""
-    with k8s.config.new_client_from_config_dict(init_k8s_config()) as client:
+    with init_k8s_client() as client:
         api = k8s.client.CoreV1Api(client)
 
         image = os.environ.get("RUNNER_IMAGE", k8s_image)
@@ -201,7 +201,7 @@ def provision_runner(payload, jit_config, pod_name, k8s_image, k8s_spec):
 
 def delete_pod(pod_name):
     """Delete a runner pod by name."""
-    with k8s.config.new_client_from_config_dict(init_k8s_config()) as client:
+    with init_k8s_client() as client:
         api = k8s.client.CoreV1Api(client)
         try:
             api.delete_namespaced_pod(name=pod_name, namespace="default")
@@ -216,7 +216,7 @@ def delete_pod(pod_name):
 
 def has_available_slot(node_selector):
     """Check if there's an available runner slot on nodes matching the selector."""
-    with k8s.config.new_client_from_config_dict(init_k8s_config()) as client:
+    with init_k8s_client() as client:
         api = k8s.client.CoreV1Api(client)
 
         nodes = api.list_node()
@@ -243,3 +243,12 @@ def has_available_slot(node_selector):
         logger.info("Capacity check: node_selector=%s, total=%d, active=%d, available=%d",
                      node_selector, total, active, available)
         return available > 0
+
+def list_pods():
+    """Get all runner pods."""
+    with init_k8s_client() as client:
+        api = k8s.client.CoreV1Api(client)
+        pods = api.list_namespaced_pod(
+            namespace="default", label_selector="app=rise-riscv-runner"
+        )
+        return pods.items
