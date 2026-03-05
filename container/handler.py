@@ -137,14 +137,6 @@ def check_required_labels(payload):
         logger.debug("Ignoring job: missing required 'rise' label (got %s)", sorted(job_labels))
         raise WebhookError(200, "Ignoring job: missing required 'rise' label.")
 
-    if "ubuntu-24.04-riscv" in job_labels:
-        k8s_image = "cloudv10x/github-actions-riscv:docker-ubuntu-2.331.0"
-    # elif "ubuntu-26.04-riscv" in job_labels:
-    #     k8s_image = "cloudv10x/github-actions-riscv:docker-ubuntu-2.331.0"
-    else:
-        logger.debug("Ignoring job: missing required platform label (got %s)", sorted(job_labels))
-        raise WebhookError(200, "Ignoring job: missing required platform label.")
-
     SCW_EM_RV1_SPEC = {
         "nodeSelector": {
             "riseproject.dev/board": "scw-em-rv1",
@@ -155,13 +147,27 @@ def check_required_labels(payload):
     #         "riseproject.dev/board": "scw-em-rv2",
     #     },
     # }
+    CLOUDV10X_RVV_SPEC = {
+        "nodeSelector": {
+            "riseproject.dev/board": "cloudv10x-rvv",
+        },
+    }
 
-    # Defaults to the Scaleway EM-RV1 board
-    k8s_spec = SCW_EM_RV1_SPEC
-
-    # We want to support more labels like "rva23", or "rvv" in the future
-    # if "rva23" in job_labels or "rvv" in job_labels:
+    if "ubuntu-24.04-riscv" in job_labels:
+        k8s_spec = SCW_EM_RV1_SPEC
+        k8s_image = "cloudv10x/github-actions-riscv:docker-ubuntu-2.331.0"
+    elif "ubuntu-24.04-riscv-rvv" in job_labels:
+        k8s_spec = CLOUDV10X_RVV_SPEC
+        k8s_image = "cloudv10x/github-actions-riscv:docker-ubuntu-2.331.0"
+    # elif "ubuntu-24.04-riscv-rva23" in job_labels:
     #     k8s_spec = SCW_EM_RV2_SPEC
+    #     k8s_image = "cloudv10x/github-actions-riscv:docker-ubuntu-2.331.0"
+    # elif "ubuntu-26.04-riscv" in job_labels:
+    #     k8s_spec = SCW_EM_RV1_SPEC
+    #     k8s_image = "cloudv10x/github-actions-riscv:docker-ubuntu-2.331.0"
+    else:
+        logger.debug("Ignoring job: missing required platform label (got %s)", sorted(job_labels))
+        raise WebhookError(200, "Ignoring job: missing required platform label.")
 
     return k8s_image, k8s_spec, list(job_labels)
 
