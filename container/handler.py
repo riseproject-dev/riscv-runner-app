@@ -64,7 +64,7 @@ def proxy_to_staging():
         logger.debug("Proxy skipped: org %s not in STAGING_ORGS", org_id)
         return None
 
-    logger.info("Proxying request for org %s to staging (%s)", org_id, staging_url)
+    logger.debug("Proxying request for org %s to staging (%s)", org_id, staging_url)
 
     resp = requests.post(
         staging_url,
@@ -115,7 +115,7 @@ def check_webhook_event(body):
 
     action = payload.get("action")
     if action not in ("queued", "completed"):
-        logger.info("Ignoring action: %s", action)
+        logger.debug("Ignoring action: %s", action)
         raise WebhookError(200, f"Ignoring action: {action}")
 
     job = payload.get("workflow_job", {})
@@ -131,11 +131,11 @@ def check_required_labels(payload):
     job_labels = set(payload.get("workflow_job", {}).get("labels", []))
 
     if any(label not in VALID_JOB_LABELS for label in job_labels):
-        logger.info("Ignoring job: contains unsupported labels (got %s)", sorted(job_labels))
+        logger.debug("Ignoring job: contains unsupported labels (got %s)", sorted(job_labels))
         raise WebhookError(200, "Ignoring job: contains unsupported labels.")
 
     if not "rise" in job_labels:
-        logger.info("Ignoring job: missing required 'rise' label (got %s)", sorted(job_labels))
+        logger.debug("Ignoring job: missing required 'rise' label (got %s)", sorted(job_labels))
         raise WebhookError(200, "Ignoring job: missing required 'rise' label.")
 
     if "ubuntu-24.04-riscv" in job_labels:
@@ -143,7 +143,7 @@ def check_required_labels(payload):
     # elif "ubuntu-26.04-riscv" in job_labels:
     #     k8s_image = "cloudv10x/github-actions-riscv:docker-ubuntu-2.331.0"
     else:
-        logger.info("Ignoring job: missing required platform label (got %s)", sorted(job_labels))
+        logger.debug("Ignoring job: missing required platform label (got %s)", sorted(job_labels))
         raise WebhookError(200, "Ignoring job: missing required platform label.")
 
     SCW_EM_RV1_SPEC = {
@@ -173,11 +173,11 @@ def authorize_organization(payload):
         raise WebhookError(400, "Missing organization ID in payload")
 
     if org_id not in ALLOWED_ORGS:
-        logger.info("Organization %s (%s) not authorized",
+        logger.warning("Organization %s (%s) not authorized",
                      payload.get("organization", {}).get("login"), org_id)
         raise WebhookError(200, f"Organization {org_id} not authorized.")
 
-    logger.info("Organization %s authorized", payload.get("organization", {}).get("login"))
+    logger.debug("Organization %s authorized", payload.get("organization", {}).get("login"))
     return org_id
 
 @app.route("/health", methods=['GET'])

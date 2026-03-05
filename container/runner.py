@@ -51,7 +51,7 @@ def get_installation_access_token(jwt_token, installation_id, repository_id):
     response = requests.post(url, headers=headers, json=body)
 
     if response.status_code == 201:
-        logger.info("Obtained installation access token for installation %s, response = %s", installation_id, response.json())
+        logger.debug("Obtained installation access token for installation %s, response = %s", installation_id, response.json())
         return response.json().get("token")
     else:
         error = response.json().get("message", "Failed to get installation token")
@@ -104,7 +104,7 @@ def ensure_runner_group(payload, installation_token, runner_group_name):
 
     for group in response.json().get("runner_groups", []):
         if group.get("name") == runner_group_name:
-            logger.info("Found existing runner group '%s' (id=%s) for org %s",
+            logger.debug("Found existing runner group '%s' (id=%s) for org %s",
                         runner_group_name, group["id"], org_login)
             return group["id"]
 
@@ -117,7 +117,7 @@ def ensure_runner_group(payload, installation_token, runner_group_name):
     response = requests.post(list_url, headers=headers, json=create_body)
     if response.status_code == 201:
         group_id = response.json().get("id")
-        logger.info("Created runner group '%s' (id=%s) for org %s",
+        logger.debug("Created runner group '%s' (id=%s) for org %s",
                      runner_group_name, group_id, org_login)
         return group_id
     else:
@@ -153,7 +153,7 @@ def create_jit_runner_config(payload, installation_token, runner_group_id, job_l
 
     if response.status_code == 201:
         jit_config = response.json().get("encoded_jit_config")
-        logger.info("Created JIT runner config for org %s, runner name=%s, group_id=%s",
+        logger.debug("Created JIT runner config for org %s, runner name=%s, group_id=%s",
                      org_login, pod_name, runner_group_id)
         return jit_config, pod_name
     else:
@@ -209,7 +209,7 @@ def delete_pod(pod_name):
             return f"Pod {pod_name} deleted successfully."
         except k8s.client.exceptions.ApiException as e:
             if e.status == 404:
-                logger.info("Pod %s not found, already deleted", pod_name)
+                logger.debug("Pod %s not found, already deleted", pod_name)
                 return f"Pod {pod_name} not found."
             raise
 

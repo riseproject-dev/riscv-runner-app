@@ -34,7 +34,7 @@ def enqueue_job(r, job_id, payload, k8s_image, k8s_spec, job_labels):
     # HSETNX for idempotency — only set if job doesn't exist
     created = r.hsetnx(key, "status", "pending")
     if not created:
-        logger.info("Job %s already exists, skipping enqueue", job_id)
+        logger.debug("Job %s already exists, skipping enqueue", job_id)
         return False
 
     pipe = r.pipeline()
@@ -59,7 +59,7 @@ def complete_job(r, job_id):
     data = r.hgetall(key)
 
     if not data:
-        logger.info("Job %s not found in Redis", job_id)
+        logger.debug("Job %s not found in Redis", job_id)
         return None, None
 
     status = data.get("status")
@@ -150,7 +150,7 @@ def cleanup_job(r, job_id, pod_name):
     pipe.srem(ACTIVE_PODS, pod_name)
     pipe.delete(key)
     pipe.execute()
-    logger.info("Cleaned up job %s, pod %s", job_id, pod_name)
+    logger.debug("Cleaned up job %s, pod %s", job_id, pod_name)
 
 
 def get_active_pods(r):

@@ -10,6 +10,7 @@ from runner import (
     provision_runner,
     delete_pod,
     has_available_slot,
+    list_pods,
 )
 
 logger = logging.getLogger(__name__)
@@ -81,19 +82,13 @@ def cleanup_completed_jobs(r):
 
 def reconcile_orphan_pods(r):
     """Detect and clean up pods not tracked in Redis."""
-    import kubernetes as k8s
-    from runner import init_k8s_config
-
-    with k8s.config.new_client_from_config_dict(init_k8s_config()) as client:
-        api = k8s.client.CoreV1Api(client)
-        pods = api.list_namespaced_pod(
-            namespace="default", label_selector="app=rise-riscv-runner"
-        )
-
+    pods = list_pods()
     tracked_pods = redis_client.get_active_pods(r)
-    for pod in pods.items:
+    for pod in pods:
         pod_name = pod.metadata.name
+        logger.debug("Checking pod %s for orphan status", pod_name)
         if pod_name not in tracked_pods:
+            logger.debug("Found orphan pod %s not tracked in Redis", pod_name)
             # Check if pod is completed/failed — only clean up finished orphans
             if pod.status.phase in ("Succeeded", "Failed"):
                 logger.warning("Cleaning up orphan pod %s (phase=%s)", pod_name, pod.status.phase)
@@ -101,6 +96,10 @@ def reconcile_orphan_pods(r):
                     delete_pod(pod_name)
                 except Exception as e:
                     logger.error("Failed to clean up orphan pod %s: %s", pod_name, e)
+            elif pod.status.phase in ("Unknown"):
+                logger.warning("Pod %s in Unknown phase, may require manual investigation", pod_name)
+            else:
+                logger.warning("Pod %s in unexpected phase %s, skipping automatic cleanup", pod_name, pod.status.phase)
 
 
 def dump_state_to_log(r):
