@@ -45,7 +45,6 @@ def proxy_to_staging():
     from runner import PROD, STAGING_URL
 
     if not PROD:
-        logger.debug("Proxy skipped: not on production")
         return
 
     if request.method != "POST" or request.path != "/":
