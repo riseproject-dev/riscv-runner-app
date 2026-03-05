@@ -74,7 +74,7 @@ def authenticate_app(installation_id, repo_id):
 
 
 
-def ensure_runner_group_on_org(org_login, installation_token, runner_group_name):
+def ensure_runner_group_on_org(org_name, installation_token, runner_group_name):
     """Ensure the runner group exists and return its ID."""
 
     headers = {
@@ -83,17 +83,17 @@ def ensure_runner_group_on_org(org_login, installation_token, runner_group_name)
     }
 
     # List existing runner groups
-    list_url = f"https://api.github.com/orgs/{org_login}/actions/runner-groups"
+    list_url = f"https://api.github.com/orgs/{org_name}/actions/runner-groups"
     response = requests.get(list_url, headers=headers)
     if response.status_code != 200:
         error = response.json()
-        logger.error("Failed to list runner groups for org %s: %s", org_login, error)
+        logger.error("Failed to list runner groups for org %s: %s", org_name, error)
         raise RunnerError(f"Failed to list runner groups: {error}")
 
     for group in response.json().get("runner_groups", []):
         if group.get("name") == runner_group_name:
             logger.debug("Found existing runner group '%s' (id=%s) for org %s",
-                        runner_group_name, group["id"], org_login)
+                        runner_group_name, group["id"], org_name)
             return group["id"]
 
     # Group not found, create it
@@ -106,23 +106,23 @@ def ensure_runner_group_on_org(org_login, installation_token, runner_group_name)
     if response.status_code == 201:
         runner_group_id = response.json().get("id")
         logger.debug("Created runner group '%s' (id=%s) for org %s",
-                     runner_group_name, runner_group_id, org_login)
+                     runner_group_name, runner_group_id, org_name)
         return runner_group_id
     else:
         error = response.json()
         logger.error("Failed to create runner group '%s' for org %s: %s",
-                     runner_group_name, org_login, error)
+                     runner_group_name, org_name, error)
         raise RunnerError(f"Failed to create runner group: {error}")
 
 
-def create_jit_runner_config_on_org(installation_token, runner_group_id, job_labels, org_login, runner_name):
+def create_jit_runner_config_on_org(installation_token, runner_group_id, job_labels, org_name, runner_name):
     """Create a JIT runner configuration for a new ephemeral runner."""
 
     headers = {
         "Authorization": f"Bearer {installation_token}",
         "Accept": "application/vnd.github.v3+json",
     }
-    url = f"https://api.github.com/orgs/{org_login}/actions/runners/generate-jitconfig"
+    url = f"https://api.github.com/orgs/{org_name}/actions/runners/generate-jitconfig"
     body = {
         "name": runner_name,
         "runner_group_id": runner_group_id,
@@ -133,11 +133,11 @@ def create_jit_runner_config_on_org(installation_token, runner_group_id, job_lab
     if response.status_code == 201:
         jit_config = response.json().get("encoded_jit_config")
         logger.debug("Created JIT runner config for org %s, runner name=%s, group_id=%s",
-                     org_login, runner_name, runner_group_id)
+                     org_name, runner_name, runner_group_id)
         return jit_config
     else:
         error = response.json()
-        logger.error("Failed to create JIT runner config for org %s: %s", org_login, error)
+        logger.error("Failed to create JIT runner config for org %s: %s", org_name, error)
         raise RunnerError(f"Failed to create JIT runner config: {error}")
 
 

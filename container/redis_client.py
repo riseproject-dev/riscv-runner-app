@@ -39,6 +39,11 @@ def enqueue_job(r, job_id, payload, k8s_image, k8s_spec, job_labels):
     pipe.hset(key, mapping={
         "status": "pending",
         "payload": json.dumps(payload),
+        "org_id": payload["repository"]["owner"]["id"],
+        "org_name": payload["repository"]["owner"]["login"],
+        "installation_id": payload["installation"]["id"],
+        "repo_id": payload["repository"]["id"],
+        "job_id": job_id,
         "k8s_image": k8s_image,
         "k8s_spec": json.dumps(k8s_spec),
         "job_labels": json.dumps(job_labels),

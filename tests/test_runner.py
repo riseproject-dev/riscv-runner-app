@@ -37,10 +37,10 @@ def test_authentication(mock_private_key, requests_mock):
 def test_ensure_runner_group_existing(requests_mock):
     """Test finding an existing runner group."""
     installation_token = "v1.1f699f1069f60xxx"
-    org_login = "riseproject-dev"
+    org_name = "riseproject-dev"
 
     requests_mock.get(
-        f"https://api.github.com/orgs/{org_login}/actions/runner-groups",
+        f"https://api.github.com/orgs/{org_name}/actions/runner-groups",
         json={
             "total_count": 2,
             "runner_groups": [
@@ -51,39 +51,39 @@ def test_ensure_runner_group_existing(requests_mock):
         status_code=200,
     )
 
-    group_id = ensure_runner_group_on_org(org_login, installation_token, RUNNER_GROUP_NAME)
+    group_id = ensure_runner_group_on_org(org_name, installation_token, RUNNER_GROUP_NAME)
     assert group_id == 42
 
 
 def test_ensure_runner_group_create(requests_mock):
     """Test creating a runner group when it doesn't exist."""
     installation_token = "v1.1f699f1069f60xxx"
-    org_login = "riseproject-dev"
+    org_name = "riseproject-dev"
 
     requests_mock.get(
-        f"https://api.github.com/orgs/{org_login}/actions/runner-groups",
+        f"https://api.github.com/orgs/{org_name}/actions/runner-groups",
         json={"total_count": 1, "runner_groups": [{"id": 1, "name": "Default"}]},
         status_code=200,
     )
     requests_mock.post(
-        f"https://api.github.com/orgs/{org_login}/actions/runner-groups",
+        f"https://api.github.com/orgs/{org_name}/actions/runner-groups",
         json={"id": 99, "name": RUNNER_GROUP_NAME},
         status_code=201,
     )
 
-    group_id = ensure_runner_group_on_org(org_login, installation_token, RUNNER_GROUP_NAME)
+    group_id = ensure_runner_group_on_org(org_name, installation_token, RUNNER_GROUP_NAME)
     assert group_id == 99
 
 
 def test_create_jit_runner_config(requests_mock):
     """Test JIT runner config creation."""
     installation_token = "v1.1f699f1069f60xxx"
-    org_login = "riseproject-dev"
+    org_name = "riseproject-dev"
     runner_group_id = 42
     runner_name = "rise-riscv-runner-12345"
 
     requests_mock.post(
-        f"https://api.github.com/orgs/{org_login}/actions/runners/generate-jitconfig",
+        f"https://api.github.com/orgs/{org_name}/actions/runners/generate-jitconfig",
         json={
             "runner": {"id": 23, "name": "test-runner"},
             "encoded_jit_config": "base64-encoded-jit-config-string",
@@ -92,7 +92,7 @@ def test_create_jit_runner_config(requests_mock):
     )
 
     jit_config = create_jit_runner_config_on_org(
-        installation_token, runner_group_id, ["rise", "ubuntu-24.04-riscv"], org_login, runner_name
+        installation_token, runner_group_id, ["rise", "ubuntu-24.04-riscv"], org_name, runner_name
     )
     assert jit_config == "base64-encoded-jit-config-string"
 

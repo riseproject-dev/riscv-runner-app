@@ -20,18 +20,16 @@ def make_pod(name, phase="Running", job_id=None):
     return pod
 
 
-def make_job(job_id, payload=None):
+def make_job(job_id):
     """Helper to create a mock Redis job hash."""
-    if payload is None:
-        payload = {
-            "organization": {"id": 1, "login": "test-org"},
-            "installation": {"id": 100},
-            "repository": {"id": 200, "full_name": "test-org/repo", "owner": {"login": "test-org"}},
-            "workflow_job": {"id": job_id, "name": "test", "labels": ["rise", "ubuntu-24.04-riscv"]},
-        }
     return {
         "status": "pending",
-        "payload": json.dumps(payload),
+        "org_id": "1",
+        "org_name": "test-org",
+        "installation_id": "100",
+        "repo_id": "200",
+        "repo_name": "test-org/repo",
+        "job_id": str(job_id),
         "k8s_image": "test-image:latest",
         "k8s_spec": json.dumps({"nodeSelector": {"riseproject.dev/board": "scw-em-rv1"}}),
         "job_labels": json.dumps(["rise", "ubuntu-24.04-riscv"]),
@@ -60,11 +58,14 @@ def test_provision_pending_jobs_success(
     provision_pending_jobs(r)
 
     mock_rc.pick_job.assert_called_once_with(r, "111")
-    mock_auth.assert_called_once()
+    mock_auth.assert_called_once_with("100", "200")
     mock_group.assert_called_once()
     mock_jit.assert_called_once()
     mock_provision.assert_called_once()
-    mock_rc.finish_provisioning.assert_called_once_with(r, 111, "rise-riscv-runner-111")
+    args = mock_rc.finish_provisioning.call_args[0]
+    assert args[0] is r
+    assert args[1] == "111"
+    assert args[2].startswith("rise-riscv-runner-")
 
 
 @patch("worker.redis_client")
@@ -107,7 +108,7 @@ def test_provision_pending_jobs_requeues_on_failure(mock_auth, mock_slot, mock_r
 
     provision_pending_jobs(r)
 
-    mock_rc.requeue_job.assert_called_once_with(r, 111)
+    mock_rc.requeue_job.assert_called_once_with(r, "111")
     mock_rc.finish_provisioning.assert_not_called()
 
 
