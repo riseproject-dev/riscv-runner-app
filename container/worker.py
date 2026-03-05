@@ -17,7 +17,7 @@ from runner import (
 logger = logging.getLogger(__name__)
 
 RUNNER_GROUP_NAME = "RISE RISC-V Runners"
-POLL_INTERVAL = 5 # seconds between cleaning up tasks
+POLL_INTERVAL = 15 # seconds between cleaning up tasks
 
 # Lock for atomic Redis state transitions between webhook handler and worker.
 queue_lock = threading.Lock()
