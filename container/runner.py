@@ -43,14 +43,25 @@ def generate_jwt(app_id, private_key):
     return jwt.JWT().encode(payload, private_key, alg="RS256")
 
 
-def get_installation_access_token(jwt_token, installation_id, repository_id):
-    """Get an installation access token from GitHub, scoped to a single repository."""
+@functools.lru_cache(maxsize=1)
+def init_ghapp_private_key():
+    private_key = jwt.jwk_from_pem(GHAPP_PRIVATE_KEY.encode('utf-8'))
+    assert private_key, "Failed to load private key from GHAPP_PRIVATE_KEY"
+
+    return private_key
+
+
+def authenticate_app(installation_id, repo_id):
+    """Authenticate the app as the organization and get an installation token."""
+
+    jwt_token = generate_jwt(GHAPP_ID, init_ghapp_private_key())
+
     headers = {
         "Authorization": f"Bearer {jwt_token}",
         "Accept": "application/vnd.github.v3+json",
     }
     url = f"https://api.github.com/app/installations/{installation_id}/access_tokens"
-    body = {"repository_ids": [repository_id]}
+    body = {"repository_ids": [repo_id]}
     response = requests.post(url, headers=headers, json=body)
 
     if response.status_code == 201:
@@ -62,32 +73,9 @@ def get_installation_access_token(jwt_token, installation_id, repository_id):
         raise RunnerError(error)
 
 
-@functools.lru_cache(maxsize=1)
-def init_ghapp_private_key():
-    private_key = jwt.jwk_from_pem(GHAPP_PRIVATE_KEY.encode('utf-8'))
-    assert private_key, "Failed to load private key from GHAPP_PRIVATE_KEY"
 
-    return private_key
-
-
-def authenticate_app(payload):
-    """Authenticate the app as the organization and get an installation token."""
-
-    installation_id = payload["installation"]["id"]
-    assert installation_id, "Installation ID must be provided in payload"
-
-    repo_id = payload["repository"]["id"]
-    assert repo_id, "Repository ID must be provided in payload"
-
-    jwt_token = generate_jwt(GHAPP_ID, init_ghapp_private_key())
-    return get_installation_access_token(jwt_token, installation_id, repo_id)
-
-
-def ensure_runner_group(payload, installation_token, runner_group_name):
+def ensure_runner_group_on_org(org_login, installation_token, runner_group_name):
     """Ensure the runner group exists and return its ID."""
-    org_login = payload["repository"]["owner"]["login"]
-    if not org_login:
-        raise RunnerError("Missing organization login in payload")
 
     headers = {
         "Authorization": f"Bearer {installation_token}",
@@ -116,10 +104,10 @@ def ensure_runner_group(payload, installation_token, runner_group_name):
     }
     response = requests.post(list_url, headers=headers, json=create_body)
     if response.status_code == 201:
-        group_id = response.json().get("id")
+        runner_group_id = response.json().get("id")
         logger.debug("Created runner group '%s' (id=%s) for org %s",
-                     runner_group_name, group_id, org_login)
-        return group_id
+                     runner_group_name, runner_group_id, org_login)
+        return runner_group_id
     else:
         error = response.json()
         logger.error("Failed to create runner group '%s' for org %s: %s",
@@ -127,17 +115,8 @@ def ensure_runner_group(payload, installation_token, runner_group_name):
         raise RunnerError(f"Failed to create runner group: {error}")
 
 
-def create_jit_runner_config(payload, installation_token, runner_group_id, job_labels):
+def create_jit_runner_config_on_org(installation_token, runner_group_id, job_labels, org_login, runner_name):
     """Create a JIT runner configuration for a new ephemeral runner."""
-    org_login = payload["repository"]["owner"]["login"]
-    if not org_login:
-        raise RunnerError("Missing organization login in payload")
-
-    job_id = payload["workflow_job"]["id"]
-    if not job_id:
-        raise RunnerError("Missing workflow_job id in payload")
-
-    pod_name = f"rise-riscv-runner-workflow-{job_id}"
 
     headers = {
         "Authorization": f"Bearer {installation_token}",
@@ -145,7 +124,7 @@ def create_jit_runner_config(payload, installation_token, runner_group_id, job_l
     }
     url = f"https://api.github.com/orgs/{org_login}/actions/runners/generate-jitconfig"
     body = {
-        "name": pod_name,
+        "name": runner_name,
         "runner_group_id": runner_group_id,
         "labels": job_labels,
     }
@@ -154,36 +133,34 @@ def create_jit_runner_config(payload, installation_token, runner_group_id, job_l
     if response.status_code == 201:
         jit_config = response.json().get("encoded_jit_config")
         logger.debug("Created JIT runner config for org %s, runner name=%s, group_id=%s",
-                     org_login, pod_name, runner_group_id)
-        return jit_config, pod_name
+                     org_login, runner_name, runner_group_id)
+        return jit_config
     else:
         error = response.json()
         logger.error("Failed to create JIT runner config for org %s: %s", org_login, error)
         raise RunnerError(f"Failed to create JIT runner config: {error}")
 
 
-def provision_runner(payload, jit_config, pod_name, k8s_image, k8s_spec):
+def provision_runner(jit_config, runner_name, k8s_image, k8s_spec, job_id):
     """Provision a new runner in a Kubernetes pod."""
     with init_k8s_client() as client:
         api = k8s.client.CoreV1Api(client)
-
-        image = os.environ.get("RUNNER_IMAGE", k8s_image)
 
         pod_manifest = {
             "apiVersion": "v1",
             "kind": "Pod",
             "metadata": {
-                "name": pod_name,
+                "name": runner_name,
                 "labels": {
                     "app": "rise-riscv-runner",
-                    "riseproject.com/job_id": str(payload["workflow_job"]["id"]),
+                    "riseproject.com/job_id": str(job_id),
                 },
             },
             "spec": {
                 **k8s_spec,
                 "containers": [{
                     "name": "runner",
-                    "image": image,
+                    "image": k8s_image,
                     "command": ["/bin/bash", "-eux", "-o", "pipefail", "-c"],
                     "args": [
                         f"./run.sh --jitconfig {jit_config}"
@@ -199,10 +176,6 @@ def provision_runner(payload, jit_config, pod_name, k8s_image, k8s_spec):
         }
 
         api.create_namespaced_pod(body=pod_manifest, namespace=K8S_NAMESPACE)
-        repo = payload["repository"]["full_name"]
-        job_url = payload["workflow_job"]["html_url"]
-        logger.info("Provisioned runner pod %s for repo=%s, image=%s, job=%s", pod_name, repo, image, job_url)
-        return f"Pod {pod_name} created successfully."
 
 
 def delete_pod(pod):

@@ -26,7 +26,7 @@ def make_job(job_id, payload=None):
         payload = {
             "organization": {"id": 1, "login": "test-org"},
             "installation": {"id": 100},
-            "repository": {"id": 200, "full_name": "test-org/repo"},
+            "repository": {"id": 200, "full_name": "test-org/repo", "owner": {"login": "test-org"}},
             "workflow_job": {"id": job_id, "name": "test", "labels": ["rise", "ubuntu-24.04-riscv"]},
         }
     return {
@@ -43,8 +43,8 @@ def make_job(job_id, payload=None):
 @patch("worker.redis_client")
 @patch("worker.has_available_slot", return_value=True)
 @patch("worker.authenticate_app", return_value="token-123")
-@patch("worker.ensure_runner_group", return_value=42)
-@patch("worker.create_jit_runner_config", return_value=("jit-config", "pod-123"))
+@patch("worker.ensure_runner_group_on_org", return_value=42)
+@patch("worker.create_jit_runner_config_on_org", return_value="jit-config")
 @patch("worker.provision_runner")
 def test_provision_pending_jobs_success(
     mock_provision, mock_jit, mock_group, mock_auth, mock_slot, mock_rc
@@ -64,7 +64,7 @@ def test_provision_pending_jobs_success(
     mock_group.assert_called_once()
     mock_jit.assert_called_once()
     mock_provision.assert_called_once()
-    mock_rc.finish_provisioning.assert_called_once_with(r, "111", "pod-123")
+    mock_rc.finish_provisioning.assert_called_once_with(r, 111, "rise-riscv-runner-111")
 
 
 @patch("worker.redis_client")
@@ -107,7 +107,7 @@ def test_provision_pending_jobs_requeues_on_failure(mock_auth, mock_slot, mock_r
 
     provision_pending_jobs(r)
 
-    mock_rc.requeue_job.assert_called_once_with(r, "111")
+    mock_rc.requeue_job.assert_called_once_with(r, 111)
     mock_rc.finish_provisioning.assert_not_called()
 
 

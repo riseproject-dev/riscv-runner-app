@@ -6,8 +6,8 @@ import kubernetes
 from runner import (
     RunnerError,
     authenticate_app,
-    ensure_runner_group,
-    create_jit_runner_config,
+    ensure_runner_group_on_org,
+    create_jit_runner_config_on_org,
     provision_runner,
     delete_pod,
     init_k8s_client,
@@ -23,17 +23,14 @@ def test_authentication(mock_private_key, requests_mock):
     mock_private_key.return_value = mock_jwk
 
     installation_id = 12345
-    payload = {
-        "installation": {"id": installation_id},
-        "repository": {"id": 99999},
-    }
+    repo_id = 99999
 
     requests_mock.post(f"https://api.github.com/app/installations/{installation_id}/access_tokens",
                        json={"token": "v1.1f699f1069f60xxx"},
                        status_code=201)
 
     with patch("runner.generate_jwt", return_value="fake-jwt"):
-        token = authenticate_app(payload)
+        token = authenticate_app(installation_id, repo_id)
     assert token is not None
 
 
@@ -41,7 +38,6 @@ def test_ensure_runner_group_existing(requests_mock):
     """Test finding an existing runner group."""
     installation_token = "v1.1f699f1069f60xxx"
     org_login = "riseproject-dev"
-    payload = {"repository": {"owner": {"login": org_login}}}
 
     requests_mock.get(
         f"https://api.github.com/orgs/{org_login}/actions/runner-groups",
@@ -55,7 +51,7 @@ def test_ensure_runner_group_existing(requests_mock):
         status_code=200,
     )
 
-    group_id = ensure_runner_group(payload, installation_token, RUNNER_GROUP_NAME)
+    group_id = ensure_runner_group_on_org(org_login, installation_token, RUNNER_GROUP_NAME)
     assert group_id == 42
 
 
@@ -63,7 +59,6 @@ def test_ensure_runner_group_create(requests_mock):
     """Test creating a runner group when it doesn't exist."""
     installation_token = "v1.1f699f1069f60xxx"
     org_login = "riseproject-dev"
-    payload = {"repository": {"owner": {"login": org_login}}}
 
     requests_mock.get(
         f"https://api.github.com/orgs/{org_login}/actions/runner-groups",
@@ -76,7 +71,7 @@ def test_ensure_runner_group_create(requests_mock):
         status_code=201,
     )
 
-    group_id = ensure_runner_group(payload, installation_token, RUNNER_GROUP_NAME)
+    group_id = ensure_runner_group_on_org(org_login, installation_token, RUNNER_GROUP_NAME)
     assert group_id == 99
 
 
@@ -85,10 +80,7 @@ def test_create_jit_runner_config(requests_mock):
     installation_token = "v1.1f699f1069f60xxx"
     org_login = "riseproject-dev"
     runner_group_id = 42
-    payload = {
-        "repository": {"owner": {"login": org_login}},
-        "workflow_job": {"id": 12345, "labels": ["rise", "ubuntu-24.04-riscv"]},
-    }
+    runner_name = "rise-riscv-runner-12345"
 
     requests_mock.post(
         f"https://api.github.com/orgs/{org_login}/actions/runners/generate-jitconfig",
@@ -99,9 +91,10 @@ def test_create_jit_runner_config(requests_mock):
         status_code=201,
     )
 
-    jit_config, pod_name = create_jit_runner_config(payload, installation_token, runner_group_id, ["rise", "ubuntu-24.04-riscv"])
+    jit_config = create_jit_runner_config_on_org(
+        installation_token, runner_group_id, ["rise", "ubuntu-24.04-riscv"], org_login, runner_name
+    )
     assert jit_config == "base64-encoded-jit-config-string"
-    assert pod_name == "rise-riscv-runner-workflow-12345"
 
 
 @patch('runner.init_k8s_client')
@@ -118,13 +111,9 @@ def test_provision_runner_success(mock_core_v1_api, mock_init_client):
 
     jit_config = "base64-encoded-jit-config"
     pod_name = "rise-riscv-runner-workflow-12345"
+    job_id = 12345
 
-    payload = {
-        "repository": {"full_name": "riseproject-dev/sample"},
-        "workflow_job": {"id": 12345, "html_url": "https://github.com/riseproject-dev/sample/actions/runs/1/job/1"},
-    }
-    result = provision_runner(payload, jit_config, pod_name, "test-runner-image:latest", {"nodeSelector": {}})
-    assert "created successfully" in result
+    provision_runner(jit_config, pod_name, "test-runner-image:latest", {"nodeSelector": {}}, job_id)
 
     mock_core_v1_api.assert_called_once()
     mock_api_instance.create_namespaced_pod.assert_called_once()
@@ -147,7 +136,7 @@ def test_provision_runner_config_exception():
     saved = os.environ.pop("K8S_KUBECONFIG", None)
     try:
         with pytest.raises(kubernetes.config.ConfigException):
-            provision_runner({}, "jit-config", "test-pod", "img", {})
+            provision_runner("jit-config", "test-pod", "img", {}, 99999)
     finally:
         if saved is not None:
             os.environ["K8S_KUBECONFIG"] = saved
@@ -158,7 +147,7 @@ def test_provision_runner_config_exception():
 def test_provision_runner_api_exception(mock_init_client):
     """Test runner provisioning failure due to a generic API error."""
     with pytest.raises(Exception) as excinfo:
-        provision_runner({}, "jit-config", "test-pod", "img", {})
+        provision_runner("jit-config", "test-pod", "img", {}, 99999)
     assert "Test API Error" == str(excinfo.value)
 
 

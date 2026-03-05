@@ -5,8 +5,8 @@ import threading
 import redis_client
 from runner import (
     authenticate_app,
-    ensure_runner_group,
-    create_jit_runner_config,
+    ensure_runner_group_on_org,
+    create_jit_runner_config_on_org,
     provision_runner,
     delete_pod,
     has_available_slot,
@@ -33,7 +33,7 @@ def provision_pending_jobs(r):
         if not job:
             continue
 
-        k8s_spec = json.loads(job.get("k8s_spec", "{}"))
+        k8s_spec = json.loads(job["k8s_spec"])
         node_selector = k8s_spec.get("nodeSelector", {})
 
         if not has_available_slot(node_selector):
@@ -49,17 +49,33 @@ def provision_pending_jobs(r):
             k8s_image = job["k8s_image"]
             job_labels = json.loads(job.get("job_labels", "[]"))
 
-            token = authenticate_app(payload)
-            group_id = ensure_runner_group(payload, token, RUNNER_GROUP_NAME)
-            jit_config, pod_name = create_jit_runner_config(
-                payload, token, group_id, job_labels
-            )
-            provision_runner(payload, jit_config, pod_name, k8s_image, k8s_spec)
+            org_login = payload["repository"]["owner"]["login"]
+            assert org_login, "Organization login must be provided in payload"
+
+            installation_id = payload["installation"]["id"]
+            assert installation_id, "Installation ID must be provided in payload"
+
+            repo_id = payload["repository"]["id"]
+            assert repo_id, "Repository ID must be provided in payload"
+
+            repo_name = payload["repository"]["full_name"]
+            assert repo_name, "Repository full name must be provided in payload"
+
+            job_id = payload["workflow_job"]["id"]
+            assert job_id, "Workflow job ID must be provided in payload"
+
+            runner_name = f"rise-riscv-runner-{job_id}"
+
+            installation_token = authenticate_app(installation_id, repo_id)
+            runner_group_id = ensure_runner_group_on_org(org_login, installation_token, RUNNER_GROUP_NAME)
+            jit_config = create_jit_runner_config_on_org(
+                installation_token, runner_group_id, job_labels, org_login, runner_name)
+            provision_runner(jit_config, runner_name, k8s_image, k8s_spec, job_id)
 
             with queue_lock:
-                redis_client.finish_provisioning(r, job_id, pod_name)
+                redis_client.finish_provisioning(r, job_id, runner_name)
 
-            logger.info("Job %s now running, pod=%s", job_id, pod_name)
+            logger.info("Provisioned %s for org=%s, image=%s", runner_name, org_login, k8s_image)
 
         except Exception as e:
             logger.error("Failed to provision job %s: %s", job_id, e)
