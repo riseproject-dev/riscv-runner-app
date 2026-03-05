@@ -16,8 +16,8 @@ on:
 env:
   REGISTRY: rg.fr-par.scw.cloud
   IMAGE: funcscwriseriscvrunnerappqdvknz9s/gh-webhook
-  PROD_URL: https://riseriscvrunnerappqdvknz9s-gh-webhook.functions.fnc.fr-par.scw.cloud
-  STAGING_URL: https://riseriscvrunnerappqdvknz9s-gh-webhook-staging.functions.fnc.fr-par.scw.cloud
+  PROD_URL: http://riseriscvrunnerappqdvknz9s-gh-webhook.functions.fnc.fr-par.scw.cloud
+  STAGING_URL: http://riseriscvrunnerappqdvknz9s-gh-webhook-staging.functions.fnc.fr-par.scw.cloud
 
 jobs:
   test:
