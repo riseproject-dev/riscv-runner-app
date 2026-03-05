@@ -3,6 +3,10 @@ import pytest
 from unittest.mock import patch, MagicMock
 import kubernetes
 
+os.environ.setdefault("PROD", "false")
+os.environ.setdefault("PROD_URL", "https://prod.example.com")
+os.environ.setdefault("STAGING_URL", "https://staging.example.com")
+
 from runner import (
     RunnerError,
     authenticate_app,
@@ -205,7 +209,7 @@ def test_delete_pod_success(mock_core_v1_api, mock_init_client):
     result = delete_pod("rise-riscv-runner-workflow-12345")
     assert "deleted successfully" in result
     mock_api_instance.delete_namespaced_pod.assert_called_once_with(
-        name="rise-riscv-runner-workflow-12345", namespace="default"
+        name="rise-riscv-runner-workflow-12345", namespace="staging"
     )
 
 
