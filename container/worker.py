@@ -35,7 +35,7 @@ def gh_reconcile():
     completed but Redis disagrees, mark it completed. If GitHub says in_progress
     but Redis says pending, update to running.
     """
-    active_job_ids = db.get_all_active_job_ids()
+    active_job_ids = db.get_all_job_ids()
     if not active_job_ids:
         return
 
@@ -89,14 +89,14 @@ def demand_match():
     3. K8s node capacity — skip if no available slot
     Then provisions a runner.
     """
-    pending_ids = db.get_pending_jobs()
-    if not pending_ids:
+    pending_job_ids = db.get_pending_jobs()
+    if not pending_job_ids:
         return
 
     # Cache per-org worker counts
     org_worker_counts = {}
 
-    for job_id in pending_ids:
+    for job_id in pending_job_ids:
         job = db.get_job(job_id)
         if not job or job.get("status") != "pending":
             continue
@@ -186,7 +186,7 @@ def cleanup_pods():
             db.remove_worker(org_id, k8s_pool, pod_name)
 
     # Clean up old completed job hashes
-    active_ids = db.get_all_active_job_ids()
+    active_ids = db.get_all_job_ids()
     for job_id, data in db.iter_completed_jobs():
         if job_id and job_id not in active_ids:
             created_at = float(data.get("created_at", 0))
@@ -195,10 +195,14 @@ def cleanup_pods():
 
 
 def dump_state():
-    """Log the current state of demand and supply."""
-    pending = db.get_pending_jobs()
-    active = db.get_all_active_job_ids()
-    logger.info("State: pending=%d, active=%d", len(pending), len(active))
+    """Log the current state of demand and supply per pool."""
+    pending_count = len(db.get_pending_jobs())
+    pool_stats = db.get_all_pool_stats()
+    if not pool_stats and pending_count == 0:
+        return
+    logger.info("State: pending=%d", pending_count)
+    for org_id, k8s_pool, jobs, workers in pool_stats:
+        logger.info("  pool %s:%s — jobs=%d, workers=%d", org_id, k8s_pool, jobs, workers)
 
 
 def worker_loop():

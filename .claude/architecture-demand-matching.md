@@ -100,7 +100,7 @@ Extract GitHub API functions from `handler.py`:
 - `remove_worker(org_id, k8s_pool, pod_name)` → SREM from `pool:workers`
 - `get_job(job_id)` → dict
 - `cleanup_job(job_id)` → delete hash only (worker set managed separately)
-- `get_all_active_job_ids()` → all job_ids across all pool:jobs sets
+- `get_all_job_ids()` → all job_ids across all pool:jobs sets
 
 **Threading**: `queue_event = threading.Condition()`
 

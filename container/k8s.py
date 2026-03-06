@@ -104,7 +104,7 @@ def has_available_slot(node_selector):
         )
 
         available = total - active
-        logger.info("Capacity check: node_selector=%s, total=%d, active=%d, available=%d",
+        logger.debug("Capacity check: node_selector=%s, total=%d, active=%d, available=%d",
                      node_selector, total, active, available)
         return available > 0
 

@@ -191,13 +191,31 @@ def cleanup_job(job_id):
     logger.debug("Cleaned up job %s", job_id)
 
 
-def get_all_active_job_ids():
+def get_all_job_ids():
     """Return all job_ids across all pool:jobs sets."""
     r = _init_client()
     all_ids = set()
     for key in r.scan_iter(match=f"{ENV_PREFIX}:pool:*:jobs"):
         all_ids.update(r.smembers(key))
     return all_ids
+
+
+def get_all_pool_stats():
+    """Return per-pool (org_id, k8s_pool, job_count, worker_count) stats."""
+    r = _init_client()
+    pools = {}
+    for key in r.scan_iter(match=f"{ENV_PREFIX}:pool:*:jobs"):
+        # key format: {env}:pool:{org_id}:{k8s_pool}:jobs
+        parts = key.split(":")
+        org_id, k8s_pool = parts[2], parts[3]
+        pools.setdefault((org_id, k8s_pool), [0, 0])
+        pools[(org_id, k8s_pool)][0] = r.scard(key)
+    for key in r.scan_iter(match=f"{ENV_PREFIX}:pool:*:workers"):
+        parts = key.split(":")
+        org_id, k8s_pool = parts[2], parts[3]
+        pools.setdefault((org_id, k8s_pool), [0, 0])
+        pools[(org_id, k8s_pool)][1] = r.scard(key)
+    return [(org_id, k8s_pool, jobs, workers) for (org_id, k8s_pool), (jobs, workers) in pools.items()]
 
 
 def iter_completed_jobs():

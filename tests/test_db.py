@@ -10,7 +10,7 @@ from db import (
     add_worker,
     remove_worker,
     get_job,
-    get_all_active_job_ids,
+    get_all_job_ids,
     ENV_PREFIX,
 )
 
