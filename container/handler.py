@@ -181,9 +181,8 @@ def webhook():
     if not job_id:
         raise WebhookError(400, "Job ID is missing in payload")
 
-    job_labels = payload["workflow_job"]["labels"]
-    if not job_labels:
-        raise WebhookError(400, "Job labels are missing in payload")
+    # labels may be missing when no labels are defined
+    job_labels = payload["workflow_job"]["labels"] or []
 
     # Make sure the required labels are present; Filters out unsupported jobs early
     k8s_pool, k8s_image = match_labels_to_k8s(job_labels)
