@@ -47,6 +47,9 @@ def provision_runner(jit_config, runner_name, k8s_image, k8s_pool, org_id):
                     "args": [
                         f"./run.sh --jitconfig {jit_config}"
                     ],
+                    "env": [
+                        {"name": "GITHUB_ACTIONS_RUNNER_TRACE", "value": "1"},
+                    ],
                     "resources": {
                         "limits": {
                             "riseproject.com/runner": "1",
