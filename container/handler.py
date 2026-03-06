@@ -6,11 +6,13 @@ import requests
 
 from flask import Flask, request, make_response
 
+import db
 from constants import *
 
 app = Flask(__name__)
 
 logger = logging.getLogger(__name__)
+
 
 class WebhookError(Exception):
     """Exception raised during webhook processing."""
@@ -19,36 +21,34 @@ class WebhookError(Exception):
         self.message = message
         super().__init__(message)
 
+
 @app.errorhandler(WebhookError)
 def handle_webhook_error(e):
+    if e.status_code == 200:
+        logger.debug(e.message)
+    else:
+        logger.warning(e.message)
     return make_response(e.message, e.status_code)
+
+
+@app.errorhandler(AssertionError)
+def handle_assertion_error(e):
+    logger.info(e)
+    return make_response(str(e), 400)
+
 
 @app.after_request
 def log_request(response):
     if request.method == "GET" and request.path == "/health":
-        pass # skip logging health checks
+        pass
     elif response.status_code == 200:
-        pass # skip logging successful requests to reduce noise
+        logger.debug("%s %s %s", request.method, request.path, response.status_code)
     else:
         logger.info("%s %s %s", request.method, request.path, response.status_code)
-
     return response
 
-# --- Access Control ---
-ALLOWED_ORGS = {
-    # Organizations
-    152654596, # riseproject-dev
-    # Individuals
-    660779, # luhenry
-}
-
-VALID_JOB_LABELS = {"rise", "ubuntu-24.04-riscv"}
 
 # --- Staging Proxy ---
-# Organizations whose webhooks are proxied from production to staging.
-STAGING_ORGS = {
-    152654596, # riseproject-dev
-}
 
 @app.before_request
 def proxy_to_staging():
@@ -56,23 +56,20 @@ def proxy_to_staging():
         return
 
     if request.method != "POST" or request.path != "/":
-        logger.debug("Proxy skipped: not a POST to / (method=%s, path=%s)", request.method, request.path)
         return
 
     body = request.get_data(as_text=True)
     try:
         payload = json.loads(body)
     except (json.JSONDecodeError, TypeError):
-        logger.debug("Proxy skipped: invalid JSON payload")
         return
 
     org_id = payload["repository"]["owner"]["id"]
     if org_id not in STAGING_ORGS:
-        logger.debug("Proxy skipped: org %s not in STAGING_ORGS", org_id)
+        logger.debug("Received request for org %s, not in staging orgs, skipping proxy", org_id)
         return
 
     logger.debug("Proxying request for org %s to staging (%s)", org_id, STAGING_URL)
-
     resp = requests.post(
         STAGING_URL,
         data=request.get_data(),
@@ -82,8 +79,12 @@ def proxy_to_staging():
     logger.info("Proxied request for org %s to staging, status=%s", org_id, resp.status_code)
     return make_response(resp.content, resp.status_code)
 
+
+# --- Webhook validation ---
+
 def compute_signature(body, secret):
     return hmac.new(secret.encode('utf-8'), msg=body.encode('utf-8'), digestmod=hashlib.sha256)
+
 
 def verify_signature(body, signature, secret):
     """Verify that the body was sent from GitHub by validating the signature."""
@@ -98,6 +99,7 @@ def verify_signature(body, signature, secret):
 
     return True, "Signatures match"
 
+
 def check_webhook_signature(headers, body):
     """Verify the webhook signature."""
     signature = headers.get("X-Hub-Signature-256")
@@ -109,77 +111,33 @@ def check_webhook_signature(headers, body):
 
     return body
 
+
 def check_webhook_event(body):
-    """Check if the event is a 'queued' or 'completed' workflow_job."""
+    """Check if the event is a workflow_job with a handled action."""
     try:
         payload = json.loads(body)
     except json.JSONDecodeError:
+        logger.debug("Invalid JSON payload")
         raise WebhookError(400, "Invalid JSON payload")
 
     action = payload["action"]
-    if action not in ("queued", "completed"):
+    if action not in ("queued", "in_progress", "completed"):
         logger.debug("Ignoring action: %s", action)
         raise WebhookError(200, f"Ignoring action: {action}")
 
-    job = payload["workflow_job"]
     logger.info("Received %s workflow_job id=%s name=%s repo=%s labels=%s",
-                action, job.get("id"), job.get("name"),
+                action, payload["workflow_job"]["id"], payload["workflow_job"]["name"],
                 payload["repository"]["full_name"],
-                job.get("labels"))
+                payload["workflow_job"]["labels"])
 
     return payload, action
 
-def check_required_labels(payload):
-    """Check that the workflow job has the required runs-on labels."""
-    job_labels = set(payload["workflow_job"]["labels"])
-
-    if any(label not in VALID_JOB_LABELS for label in job_labels):
-        logger.debug("Ignoring job: contains unsupported labels (got %s)", sorted(job_labels))
-        raise WebhookError(200, "Ignoring job: contains unsupported labels.")
-
-    if not "rise" in job_labels:
-        logger.debug("Ignoring job: missing required 'rise' label (got %s)", sorted(job_labels))
-        raise WebhookError(200, "Ignoring job: missing required 'rise' label.")
-
-    SCW_EM_RV1_SPEC = {
-        "nodeSelector": {
-            "riseproject.dev/board": "scw-em-rv1",
-        },
-    }
-    # SCW_EM_RV2_SPEC = {
-    #     "nodeSelector": {
-    #         "riseproject.dev/board": "scw-em-rv2",
-    #     },
-    # }
-    CLOUDV10X_RVV_SPEC = {
-        "nodeSelector": {
-            "riseproject.dev/board": "cloudv10x-rvv",
-        },
-    }
-
-    if "ubuntu-24.04-riscv" in job_labels:
-        k8s_spec = SCW_EM_RV1_SPEC
-        k8s_image = "cloudv10x/github-actions-riscv:docker-ubuntu-2.331.0"
-    elif "ubuntu-24.04-riscv-rvv" in job_labels:
-        k8s_spec = CLOUDV10X_RVV_SPEC
-        k8s_image = "cloudv10x/github-actions-riscv:docker-ubuntu-2.331.0"
-    # elif "ubuntu-24.04-riscv-rva23" in job_labels:
-    #     k8s_spec = SCW_EM_RV2_SPEC
-    #     k8s_image = "cloudv10x/github-actions-riscv:docker-ubuntu-2.331.0"
-    # elif "ubuntu-26.04-riscv" in job_labels:
-    #     k8s_spec = SCW_EM_RV1_SPEC
-    #     k8s_image = "cloudv10x/github-actions-riscv:docker-ubuntu-2.331.0"
-    else:
-        logger.debug("Ignoring job: missing required platform label (got %s)", sorted(job_labels))
-        raise WebhookError(200, "Ignoring job: missing required platform label.")
-
-    return k8s_image, k8s_spec, list(job_labels)
 
 def authorize_organization(payload):
     """Authorize the organization."""
     org_id = payload["repository"]["owner"]["id"]
     if not org_id:
-        raise WebhookError(400, "Missing organization ID in payload")
+        raise WebhookError(400, "Organization ID is missing in payload")
 
     if org_id not in ALLOWED_ORGS:
         logger.warning("Organization %s (%s) not authorized",
@@ -189,61 +147,94 @@ def authorize_organization(payload):
     logger.debug("Organization %s authorized", payload["repository"]["owner"]["login"])
     return org_id
 
+
+def match_labels_to_k8s(job_labels):
+    """
+    Map workflow job labels to a k8s pool name and container image.
+
+    Returns (k8s_pool, k8s_image) where k8s_pool is the board name string
+    used as Redis pool key and pod label.
+    """
+    if "ubuntu-24.04-riscv" in job_labels:
+        return "scw-em-rv1", "cloudv10x/github-actions-riscv:docker-ubuntu-2.331.0"
+    elif "ubuntu-24.04-riscv-rvv" in job_labels:
+        return "cloudv10x-rvv", "cloudv10x/github-actions-riscv:docker-ubuntu-2.331.0"
+    else:
+        raise WebhookError(200, f"Ignoring job: missing required platform label (got {job_labels})")
+
+
+# --- Routes ---
+
 @app.route("/health", methods=['GET'])
 def health():
     return "ok"
 
+
 @app.route("/", methods=['POST'])
 def webhook():
-    import redis_client
-    from worker import queue_lock, queue_event
-    from runner import delete_pod, find_pod_by_job_id
-
     body = check_webhook_signature(request.headers, request.get_data(as_text=True))
     payload, action = check_webhook_event(body)
 
+    authorize_organization(payload)
+
+    job_id = payload["workflow_job"]["id"]
+    if not job_id:
+        raise WebhookError(400, "Job ID is missing in payload")
+
+    job_labels = payload["workflow_job"]["labels"]
+    if not job_labels:
+        raise WebhookError(400, "Job labels are missing in payload")
+
+    # Make sure the required labels are present; Filters out unsupported jobs early
+    k8s_pool, k8s_image = match_labels_to_k8s(job_labels)
+
     if action == "queued":
-        k8s_image, k8s_spec, job_labels = check_required_labels(payload)
+        installation_id = payload["installation"]["id"]
+        if not installation_id:
+            raise WebhookError(400, "Installation ID is missing in payload")
 
-        # This should be removed at some point as all organizations should be allowed
-        authorize_organization(payload)
+        org_id = payload["repository"]["owner"]["id"]
+        if not org_id:
+            raise WebhookError(400, "Organization ID is missing in payload")
 
-        job_id = payload["workflow_job"]["id"]
-        if not job_id:
-            raise WebhookError(400, "Missing workflow_job id in payload")
+        org_name = payload["repository"]["owner"]["login"]
+        if not org_name:
+            raise WebhookError(400, "Organization name is missing in payload")
 
-        r = redis_client.connect()
-        with queue_lock:
-            enqueued = redis_client.enqueue_job(r, job_id, payload, k8s_image, k8s_spec, job_labels)
-            if enqueued:
-                queue_event.notify()
+        repo_full_name = payload["repository"]["full_name"]
+        if not repo_full_name:
+            raise WebhookError(400, "Repository full name is missing in payload")
 
-        if enqueued:
-            return f"Job {job_id} enqueued."
+        stored = db.store_job(
+            job_id=job_id,
+            org_id=org_id,
+            org_name=org_name,
+            repo_full_name=repo_full_name,
+            installation_id=installation_id,
+            labels=job_labels,
+            k8s_pool=k8s_pool,
+            k8s_image=k8s_image,
+        )
+
+        if stored:
+            return f"Job {job_id} stored."
         else:
-            return f"Job {job_id} already enqueued."
+            return f"Job {job_id} already exists."
+
+    elif action == "in_progress":
+        prev_status = db.update_job_running(job_id)
+        if prev_status is None:
+            logger.warning("Job %s not found in Redis on in_progress event", job_id)
+            return f"Job {job_id} not found."
+        logger.info("Job %s marked running (was %s)", job_id, prev_status)
+        return f"Job {job_id} marked running (was {prev_status})."
 
     elif action == "completed":
-        job_id = payload["workflow_job"]["id"]
-        if not job_id:
-            raise WebhookError(400, "Missing workflow_job id in payload")
-
-        r = redis_client.connect()
-        with queue_lock:
-            prev_status = redis_client.complete_job(r, job_id)
-
+        prev_status = db.complete_job(job_id)
         if prev_status is None:
-            # Job not in Redis — search k8s by job_id label as fallback
-            pod = find_pod_by_job_id(job_id)
-            if pod:
-                logger.warning("Job %s not found in Redis, deleting pod %s found by label", job_id, pod.metadata.name)
-                delete_pod(pod)
-                return f"Job {job_id} not found in Redis, pod {pod.metadata.name} deleted."
-            else:
-                logger.warning("Job %s not found in Redis or k8s", job_id)
-                return f"Job {job_id} not found."
-
-        return f"Job {job_id} marked completed (was {prev_status})."
+            logger.warning("Job %s not found in Redis on completed event", job_id)
+            return f"Job {job_id} not found."
+        return f"Job {job_id} completed (was {prev_status})."
 
     else:
-        raise WebhookError(200, f"Ignoring {action} job")
+        return f"Ignoring {action} job"

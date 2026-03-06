@@ -3,181 +3,222 @@ import logging
 import random
 import string
 import threading
+import time
+import traceback
 
-import redis_client
-from runner import (
+import db
+from constants import ORG_CONFIG, RUNNER_GROUP_NAME
+from github import (
     authenticate_app,
-    ensure_runner_group_on_org,
-    create_jit_runner_config_on_org,
-    provision_runner,
+    create_jit_runner_config,
+    ensure_runner_group,
+    get_job_status,
+    GitHubAPIError,
+)
+from k8s import (
     delete_pod,
     has_available_slot,
     list_pods,
-    find_pod_by_job_id,
+    provision_runner,
 )
 
 logger = logging.getLogger(__name__)
 
-RUNNER_GROUP_NAME = "RISE RISC-V Runners"
-POLL_INTERVAL = 15 # seconds between cleaning up tasks
-
-# Lock for atomic Redis state transitions between webhook handler and worker.
-queue_lock = threading.Lock()
-# Condition using queue_lock to wake the worker immediately when a job is enqueued.
-queue_event = threading.Condition(lock=queue_lock)
+POLL_INTERVAL = 15
 
 
-def provision_pending_jobs(r):
-    """Try to provision pending jobs that have matching cluster capacity."""
-    pending = redis_client.get_pending_jobs(r)
-    for job_id in pending:
-        job = redis_client.get_job(r, job_id)
+def gh_reconcile():
+    """
+    Reconcile Redis state with GitHub API.
+
+    For each active job, check GitHub for its actual status. If GitHub says
+    completed but Redis disagrees, mark it completed. If GitHub says in_progress
+    but Redis says pending, update to running.
+    """
+    active_job_ids = db.get_all_active_job_ids()
+    if not active_job_ids:
+        return
+
+    # Group jobs by installation_id to minimize auth calls
+    jobs_by_installation = {}
+    for job_id in active_job_ids:
+        job = db.get_job(job_id)
         if not job:
             continue
+        if job.get("status") == "completed":
+            continue
+        inst_id = job.get("installation_id")
+        if inst_id:
+            jobs_by_installation.setdefault(inst_id, []).append(job)
 
-        k8s_spec = json.loads(job["k8s_spec"])
-        node_selector = k8s_spec.get("nodeSelector", {})
-
-        if not has_available_slot(node_selector):
+    for installation_id, jobs in jobs_by_installation.items():
+        try:
+            token = authenticate_app(int(installation_id))
+        except GitHubAPIError as e:
+            logger.error("Failed to authenticate for installation %s: %s", installation_id, e)
             continue
 
-        with queue_lock:
-            if not redis_client.pick_job(r, job_id):
-                continue  # job was cancelled between check and pickup
-
-        # Provisioning happens outside the lock (slow GitHub/K8s API calls)
-        try:
-            org_id = job["org_id"]
-            org_name = job["org_name"]
-            installation_id = job["installation_id"]
-            repo_id = job["repo_id"]
+        for job in jobs:
             job_id = job["job_id"]
-            k8s_image = job["k8s_image"]
-            job_labels = json.loads(job.get("job_labels", "[]"))
+            repo = job.get("repo_full_name")
+            if not repo:
+                continue
 
+            try:
+                gh_status = get_job_status(repo, job_id, token)
+            except GitHubAPIError as e:
+                logger.error("Failed to get status for job %s: %s", job_id, e)
+                continue
+
+            redis_status = job.get("status")
+            if gh_status == "completed" and redis_status != "completed":
+                logger.info("GH reconcile: job %s is completed on GitHub (was %s in Redis)", job_id, redis_status)
+                db.complete_job(job_id)
+            elif gh_status == "in_progress" and redis_status == "pending":
+                logger.info("GH reconcile: job %s is in_progress on GitHub (was pending in Redis)", job_id)
+                db.update_job_running(job_id)
+
+
+def demand_match():
+    """
+    Match demand (pending jobs) with supply (k8s workers).
+
+    Iterates pending jobs in FIFO order. For each job, checks:
+    1. Pool demand vs supply — skip if demand already met
+    2. Org max_workers cap — skip if org is at capacity
+    3. K8s node capacity — skip if no available slot
+    Then provisions a runner.
+    """
+    pending_ids = db.get_pending_jobs()
+    if not pending_ids:
+        return
+
+    # Cache per-org worker counts
+    org_worker_counts = {}
+
+    for job_id in pending_ids:
+        job = db.get_job(job_id)
+        if not job or job.get("status") != "pending":
+            continue
+
+        org_id = job.get("org_id")
+        k8s_pool = job.get("k8s_pool")
+        k8s_image = job.get("k8s_image")
+        installation_id = job.get("installation_id")
+        org_name = job.get("org_name")
+        labels = json.loads(job.get("job_labels", "[]"))
+
+        if not all([org_id, k8s_pool, k8s_image, installation_id, org_name]):
+            logger.warning("Job %s missing required fields, skipping", job_id)
+            continue
+
+        # Check pool demand vs supply
+        job_count, worker_count = db.get_pool_demand(org_id, k8s_pool)
+        if job_count <= worker_count:
+            logger.debug("Job %s: pool %s:%s demand met (jobs=%d, workers=%d)",
+                        job_id, org_id, k8s_pool, job_count, worker_count)
+            continue
+
+        # Check org max_workers cap
+        org_config = ORG_CONFIG.get(int(org_id), {})
+        max_workers = org_config.get("max_workers")
+        if max_workers is not None:
+            if org_id not in org_worker_counts:
+                org_worker_counts[org_id] = db.get_total_workers_for_org(org_id)
+            if org_worker_counts[org_id] >= max_workers:
+                logger.debug("Job %s: org %s at max_workers (%d/%d)",
+                            job_id, org_name, org_worker_counts[org_id], max_workers)
+                continue
+
+        # Check k8s capacity
+        node_selector = {"riseproject.dev/board": k8s_pool}
+        if not has_available_slot(node_selector):
+            logger.debug("Job %s: no k8s capacity for pool %s", job_id, k8s_pool)
+            continue
+
+        # Provision
+        try:
             suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=9))
             runner_name = f"rise-riscv-runner-{org_id}-{suffix}"
 
-            installation_token = authenticate_app(installation_id, repo_id)
-            runner_group_id = ensure_runner_group_on_org(org_name, installation_token, RUNNER_GROUP_NAME)
-            jit_config = create_jit_runner_config_on_org(
-                installation_token, runner_group_id, job_labels, org_name, runner_name)
-            provision_runner(jit_config, runner_name, k8s_image, k8s_spec, job_id)
+            token = authenticate_app(int(installation_id))
+            group_id = ensure_runner_group(org_name, token, RUNNER_GROUP_NAME)
+            jit_config = create_jit_runner_config(token, group_id, labels, org_name, runner_name)
 
-            with queue_lock:
-                redis_client.finish_provisioning(r, job_id, runner_name)
+            provision_runner(jit_config, runner_name, k8s_image, k8s_pool, org_id)
 
-            logger.info("Provisioned %s for org=%s, image=%s", runner_name, org_name, k8s_image)
+            db.mark_provisioned(job_id, runner_name)
+            db.add_worker(org_id, k8s_pool, runner_name)
+
+            # Update local cache
+            org_worker_counts[org_id] = org_worker_counts.get(org_id, 0) + 1
+
+            logger.info("Provisioned %s for org=%s pool=%s job=%s", runner_name, org_name, k8s_pool, job_id)
 
         except Exception as e:
             logger.error("Failed to provision job %s: %s", job_id, e)
-            with queue_lock:
-                redis_client.requeue_job(r, job_id)
 
 
-def cleanup_completed_jobs(r):
-    """Delete pods for jobs that have been marked completed."""
-    with queue_lock:
-        completed = redis_client.get_completed_jobs_with_pods(r)
+def cleanup_pods():
+    """
+    Clean up completed/failed pods and stale job hashes.
 
-    for job_id in completed:
-        pod = find_pod_by_job_id(job_id)
-        if pod:
-            try:
-                delete_pod(pod)
-            except Exception as e:
-                logger.error("Failed to delete pod %s for job %s: %s", pod.metadata.name, job_id, e)
-                continue
-        else:
-            logger.debug("No pod found for completed job %s", job_id)
-
-        with queue_lock:
-            redis_client.cleanup_job(r, job_id)
-
-
-def reconcile_orphan_pods(r):
-    """Detect and clean up pods not tracked in Redis."""
+    Lists all runner pods, deletes those in Succeeded/Failed phase, and
+    removes them from their pool:workers set.
+    """
     pods = list_pods()
-    tracked_job_ids = redis_client.get_active_jobs(r)
     for pod in pods:
-        pod_name = pod.metadata.name
-        pod_labels = pod.metadata.labels or {}
-        pod_job_id = pod_labels.get("riseproject.com/job_id")
-        if not pod_job_id:
-            logger.debug("Pod %s missing riseproject.com/job_id label, skipping", pod_name)
+        if pod.status.phase not in ("Succeeded", "Failed"):
             continue
 
-        logger.debug("Checking pod %s for orphan status", pod_name)
-        if pod_job_id not in tracked_job_ids:
-            logger.debug("Found orphan pod %s not tracked in Redis", pod_name)
-            # Check if pod is completed/failed — only clean up finished orphans
-            if pod.status.phase in ("Succeeded", "Failed"):
-                logger.warning("Cleaning up orphan pod %s (phase=%s)", pod_name, pod.status.phase)
-                try:
-                    delete_pod(pod)
-                except Exception as e:
-                    logger.error("Failed to clean up orphan pod %s: %s", pod_name, e)
-            elif pod.status.phase in ("Unknown"):
-                logger.warning("Pod %s in Unknown phase, may require manual investigation", pod_name)
-            else:
-                logger.warning("Pod %s in unexpected phase %s, skipping automatic cleanup", pod_name, pod.status.phase)
-        else:
-            logger.debug("Pod %s is tracked in Redis, checking if completed on k8s anyway", pod_name)
-            # Double-check if pod is completed on k8s but not marked completed in Redis, to handle missed webhooks
-            if pod.status.phase in ("Succeeded", "Failed"):
-                logger.warning("Pod %s is tracked in Redis but in %s phase, marking completed in Redis", pod_name, pod.status.phase)
+        pod_name = pod.metadata.name
+        pod_labels = pod.metadata.labels or {}
+        org_id = pod_labels.get("riseproject.com/org_id")
+        k8s_pool = pod_labels.get("riseproject.com/board")
 
-                job_id = pod_labels.get("riseproject.com/job_id")
-                if not job_id:
-                    logger.error("Pod %s missing riseproject.com/job_id label, cannot mark completed in Redis", pod_name)
-                    continue
-                # First mark completed in Redis
-                with queue_lock:
-                    redis_client.complete_job(r, job_id)
-                # Then delete the pod
-                try:
-                    delete_pod(pod)
-                except Exception as e:
-                    logger.error("Failed to delete pod %s during reconciliation: %s", pod_name, e)
+        try:
+            delete_pod(pod)
+        except Exception as e:
+            logger.error("Failed to delete pod %s: %s", pod_name, e)
+            continue
+
+        if org_id and k8s_pool:
+            db.remove_worker(org_id, k8s_pool, pod_name)
+
+    # Clean up old completed job hashes
+    active_ids = db.get_all_active_job_ids()
+    for job_id, data in db.iter_completed_jobs():
+        if job_id and job_id not in active_ids:
+            created_at = float(data.get("created_at", 0))
+            if time.time() - created_at > 300:  # 5 minutes
+                db.cleanup_job(job_id)
 
 
-def dump_state_to_log(r):
-    """Log the current state of the queue and active runners."""
-    pending = redis_client.get_pending_jobs(r)
-    active = redis_client.get_active_jobs(r)
-    completed = redis_client.get_completed_jobs_with_pods(r)
-    logger.info("Queue state: pending=%d, active=%d, completed=%d",
-                len(pending), len(active), len(completed))
-    for job_id in pending:
-        job = redis_client.get_job(r, job_id)
-        logger.info("  pending job %s: status=%s", job_id, job.get("status") if job else "missing")
-    for job_id in active:
-        pod = find_pod_by_job_id(job_id)
-        logger.info("  active job %s: (pod=%s, phase=%s)", job_id, pod.metadata.name if pod else "<not found>", pod.status.phase if pod else "<not found>")
-    for job_id in completed:
-        pod = find_pod_by_job_id(job_id)
-        logger.info("  completed job %s: (pod=%s, phase=%s)", job_id, pod.metadata.name if pod else "<not found>", pod.status.phase if pod else "<not found>")
+def dump_state():
+    """Log the current state of demand and supply."""
+    pending = db.get_pending_jobs()
+    active = db.get_all_active_job_ids()
+    logger.info("State: pending=%d, active=%d", len(pending), len(active))
 
 
-def worker_loop(r):
-    """Main worker loop — polls Redis and manages runner lifecycle."""
+def worker_loop():
+    """Main worker loop."""
     while True:
         try:
-            provision_pending_jobs(r)
-            cleanup_completed_jobs(r)
-            reconcile_orphan_pods(r)
-            dump_state_to_log(r)
+            gh_reconcile()
+            cleanup_pods()
+            demand_match()
+            dump_state()
         except Exception as e:
-            logger.error("Worker error: %s\n%s", e, e.format_exc())
+            logger.error("Worker error: %s\n%s", e, traceback.format_exc())
 
-        with queue_event:
-            queue_event.wait(timeout=POLL_INTERVAL)
+        with db.queue_event:
+            db.queue_event.wait(timeout=POLL_INTERVAL)
 
 
 def start_worker():
     """Start the background worker thread."""
-    r = redis_client.connect()
-    thread = threading.Thread(target=worker_loop, args=(r,), daemon=True)
+    thread = threading.Thread(target=worker_loop, daemon=True)
     thread.start()
     logger.info("Background worker started")
     return thread

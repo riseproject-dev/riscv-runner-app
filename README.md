@@ -1,6 +1,6 @@
 # RISC-V Runner App
 
-A GitHub App that listens for `workflow_job` webhooks and provisions ephemeral RISC-V GitHub Actions runners on Kubernetes.
+A GitHub App that listens for `workflow_job` webhooks and provisions ephemeral RISC-V GitHub Actions runners on Kubernetes using a demand-matching model.
 
 ## Usage
 
@@ -13,73 +13,179 @@ A GitHub App that listens for `workflow_job` webhooks and provisions ephemeral R
 
 ### Running workflows on RISC-V
 
-Use `runs-on: [rise, ubuntu-24.04-riscv]` in your workflow:
+Use `runs-on: ubuntu-24.04-riscv` in your workflow:
 
 ```yaml
 jobs:
   build:
-    runs-on: [rise, ubuntu-24.04-riscv]
+    runs-on: ubuntu-24.04-riscv
     steps:
       - uses: actions/checkout@v4
       - run: uname -m  # riscv64
 ```
 
-When the workflow is queued, the app enqueues the job and a background worker provisions a RISC-V runner pod when cluster capacity is available. The runner picks up the job, executes it, and terminates. Jobs that don't include both `rise` and `ubuntu-24.04-riscv` labels are ignored.
+Available platform labels:
+
+| Labels | Board | Description |
+|--------|-------|-------------|
+| `ubuntu-24.04-riscv` | `scw-em-rv1` | Scaleway EM-RV1 RISC-V |
+| `ubuntu-24.04-riscv-rvv` | `cloudv10x-rvv` | CloudV10x RVV |
 
 ### Requirements
 
-- Your organization must be on the allowlist. Unauthorized organizations are silently ignored.
-- Workflows must use `runs-on: [rise, ubuntu-24.04-riscv]` — both labels are required.
-- Runners are ephemeral — each runner handles exactly one job and then terminates.
+- [Temporary] Your organization must be on the allowlist. Unauthorized organizations are silently ignored.
+- Runners are ephemeral -- each runner handles exactly one job and then terminates.
 
 ## Architecture
 
+The app uses a **demand matching** model: on one side, workflow_jobs create demand for runners; on the other, k8s workers provide supply. The background worker scales supply to match demand per (org, k8s_pool) pool, with configurable limits per org.
+
+Jobs and workers are not directly linked -- the only relationship is through the org. GitHub makes no direct job-to-runner link; a runner is attached to an org, and the job runs inside that org.
+
 ```
 GitHub (workflow_job webhook)
-  │
-  ▼
-Scaleway Container (handler.py)
-  │
-  ├── Verifies webhook signature
-  ├── Checks the event is a "queued" or "completed" workflow job
-  ├── Checks the job has required labels (rise + platform label)
-  ├── Authorizes the organization against an allowlist
-  └── Enqueues job to Redis / marks job completed in Redis
-        │
-        ▼
-      Redis (job queue + state store)
-        │
-        ▼
-Background Worker Thread (worker.py)
-  │
-  ├── Polls pending jobs from Redis
-  ├── Checks k8s cluster capacity per node selector
-  ├── Authenticates as GitHub App, creates JIT runner config
-  ├── Provisions runner pod on Kubernetes
-  ├── Cleans up pods for completed jobs
-  └── Reconciles orphan pods
+  |
+  v
+Webhook Handler (handler.py)
+  |  - Verifies webhook signature
+  |  - Validates labels, authorizes org
+  |  - Resolves labels -> (k8s_pool, k8s_image)
+  |  - Writes job to Redis
+  |  - NO GitHub API calls, NO k8s calls
+  |
+  v
+Redis (demand + supply state)
+  |  - Job hashes: per-job metadata
+  |  - Pool sets: jobs (demand) and workers (supply) per (org, k8s_pool)
+  |  - Pending ZSET: global FIFO queue
+  |
+  v
+Background Worker (worker.py)
+  |  - GH reconciliation: sync Redis with GitHub job status
+  |  - Demand matching: provision runners where demand > supply
+  |  - Pod cleanup: delete Succeeded/Failed pods, remove from worker sets
+  |
+  v
+Kubernetes (runner pods)
 ```
 
-### How it works
+### Sequence: Queued webhook
 
-The app runs as a Flask server with a background worker thread, deployed as a Scaleway Container (always-on). The webhook handler and worker communicate through Redis.
+```
+GitHub -> Handler: workflow_job (action=queued)
+Handler: validate signature, labels, org
+Handler: match_labels_to_k8s(labels) -> (k8s_pool, k8s_image)
+Handler -> Redis: store_job() -> job hash + pool:jobs + pending ZSET
+Handler: notify queue_event (wake worker)
+Handler -> GitHub: 200 OK
+```
 
-**On `queued` events:** The webhook handler validates the request, checks labels and organization authorization, then enqueues the job to Redis. No GitHub API calls or k8s provisioning happens in the webhook handler — it returns immediately.
+### Sequence: Worker provisioning
 
-**On `completed` events:** The handler marks the job as completed in Redis. If the job was still pending (never provisioned), it's simply removed from the queue. If it was running, the worker will clean up the pod.
+```
+Worker: get_pending_jobs() from pending ZSET (FIFO)
+Worker: for each pending job:
+  - get_pool_demand(org_id, k8s_pool) -> (jobs, workers)
+  - if jobs <= workers: skip (demand met)
+  - if org total workers >= max_workers: skip
+  - has_available_slot(node_selector): skip if no capacity
+  - authenticate_app(installation_id) -> token
+  - ensure_runner_group(org, token) -> group_id
+  - create_jit_runner_config(token, group_id, labels, org, name) -> jit_config
+  - provision_runner(jit_config, name, image, pool, org_id) -> pod
+  - mark_provisioned(job_id, pod_name)
+  - add_worker(org_id, k8s_pool, pod_name)
+```
 
-**Background worker:** Polls Redis every 10 seconds. For each pending job, it checks whether the k8s cluster has available capacity matching the job's node selector. When capacity exists, it authenticates as the GitHub App, creates a JIT runner config, and provisions the pod. It also cleans up pods for completed jobs and reconciles orphan pods.
+### Sequence: Completed webhook
+
+```
+GitHub -> Handler: workflow_job (action=completed)
+Handler -> Redis: complete_job(job_id)
+  - SREM from pool:jobs
+  - ZREM from pending (if still there)
+  - Update hash status=completed
+Handler -> GitHub: 200 OK
+```
+
+### Sequence: Cancellation
+
+Cancellation is passive. When a job is cancelled on GitHub:
+1. The `completed` webhook fires and removes the job from pool:jobs
+2. If a worker was already provisioned, it picks up the next job or times out
+3. GH reconciliation detects stale jobs within ~15s and cleans them up
+
+### Job lifecycle state machine
+
+```
+queued webhook         worker provisions       completed webhook
+    |                       |                       |
+    v                       v                       v
+ PENDING  ----------->  RUNNING  ----------->  COMPLETED
+    |                                               ^
+    +-----------------------------------------------+
+              completed webhook (before provision)
+```
+
+### Worker lifecycle
+
+```
+Pod created by worker -> Running -> Succeeded (job done) / Failed (error)
+                                         |
+                                    cleanup_pods() deletes pod,
+                                    removes from pool:workers
+```
+
+### Redis schema
+
+All keys are prefixed with `prod:` or `staging:` depending on environment.
+
+| Key | Type | Contents | Purpose |
+|-----|------|----------|---------|
+| `{env}:job:{job_id}` | HASH | job data | Per-job metadata |
+| `{env}:pool:{org_id}:{k8s_pool}:jobs` | SET | job_ids | Demand: pending+running jobs for this pool |
+| `{env}:pool:{org_id}:{k8s_pool}:workers` | SET | pod_names | Supply: provisioned pods for this pool |
+| `{env}:orgs` | SET | org_ids | All orgs with tracked jobs |
+| `{env}:pending` | ZSET | job_ids scored by created_at | Global FIFO queue of all pending jobs |
+
+**Job hash fields**: `job_id`, `org_id`, `org_name`, `repo_full_name`, `installation_id`, `labels` (JSON), `k8s_pool`, `k8s_image`, `status` (pending/running/completed), `created_at`
+
+### Demand matching algorithm
+
+```
+demand  = SCARD(pool:{org_id}:{k8s_pool}:jobs)      # pending + running jobs
+supply  = SCARD(pool:{org_id}:{k8s_pool}:workers)   # provisioned pods
+deficit = demand - supply
+```
+
+The worker iterates pending jobs in FIFO order. For each job:
+1. If `demand <= supply` for its pool: skip (demand already met)
+2. If org's total workers across all pools >= `max_workers`: skip
+3. If no k8s node capacity for the pool's node selector: skip
+4. Otherwise: provision a new runner
+
+### Configuration
+
+Per-org configuration is defined in `ORG_CONFIG` in `constants.py`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | str | Organization name (for logging) |
+| `max_workers` | int or None | Maximum concurrent workers across all pools. None = unlimited |
+| `pre_allocated` | int | Reserved for future use |
+| `staging` | bool | If true, webhooks are proxied from prod to staging |
 
 ### Key files
 
 | File | Purpose |
 |------|---------|
-| `container/constants.py` | Environment configuration — reads env vars and exports constants used across modules |
-| `container/handler.py` | Flask webhook handler — validates requests and enqueues/completes jobs in Redis |
-| `container/worker.py` | Background worker thread — provisions pods, cleans up, reconciles |
-| `container/runner.py` | GitHub API (auth, runner groups, JIT config) and k8s pod provisioning/deletion |
-| `container/redis_client.py` | Redis connection and job queue CRUD operations |
-| `container/serve.py` | Entry point — starts the worker thread and Flask server |
+| `container/constants.py` | Environment configuration, org config |
+| `container/handler.py` | Flask webhook handler -- validates requests, writes to Redis |
+| `container/worker.py` | Background worker -- GH reconciliation, demand matching, cleanup |
+| `container/k8s.py` | Kubernetes pod provisioning, deletion, capacity checks |
+| `container/db.py` | Redis pool-based operations |
+| `container/github.py` | GitHub API functions (auth, runner groups, JIT config, job status) |
+| `container/serve.py` | Entry point -- starts worker thread and Flask server |
 | `container/Dockerfile` | Docker image for the Scaleway Container |
 
 ### Infrastructure
@@ -87,7 +193,7 @@ The app runs as a Flask server with a background worker thread, deployed as a Sc
 | Service | Product | Purpose |
 |---------|---------|---------|
 | App container | Scaleway Container | Webhook handler + background worker (always-on) |
-| Job queue | Scaleway Managed Redis | Job queue and state store |
+| Job queue | Scaleway Managed Redis | Demand/supply state store |
 | Runner pods | Self-hosted k8s cluster | Ephemeral RISC-V runner pods |
 
 Two containers are deployed:
@@ -109,7 +215,7 @@ Run tests:
 PYTHONPATH=container pytest
 ```
 
-Tests mock Redis and Kubernetes — no live services are required.
+Tests mock Redis and Kubernetes -- no live services are required.
 
 ## Deployment
 
@@ -159,10 +265,26 @@ kubectl create clusterrolebinding gh-app-node-reader --clusterrole=gh-app-node-r
 
 ### Cleanup terminated runner pods
 
-Runner pods are automatically cleaned up by the background worker when jobs complete. Orphan pods (not tracked in Redis) are also reconciled and removed.
+Runner pods are automatically cleaned up by the background worker when pods reach Succeeded/Failed phase. Stale completed job hashes are removed after 5 minutes.
 
 To manually clean up finished pods:
 
 ```bash
 kubectl delete pods -l app=rise-riscv-runner --field-selector=status.phase!=Running,status.phase!=Pending,status.phase!=Unknown
+```
+
+### Inspect Redis state
+
+```bash
+# Check demand for a pool
+redis-cli SCARD staging:pool:{org_id}:{k8s_pool}:jobs
+
+# Check supply for a pool
+redis-cli SCARD staging:pool:{org_id}:{k8s_pool}:workers
+
+# List pending jobs
+redis-cli ZRANGE staging:pending 0 -1
+
+# View a job
+redis-cli HGETALL staging:job:{job_id}
 ```

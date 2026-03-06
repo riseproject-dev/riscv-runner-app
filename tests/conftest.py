@@ -12,5 +12,13 @@ mock_constants.GHAPP_ID = 2167633
 mock_constants.GHAPP_PRIVATE_KEY = "test-key"
 mock_constants.GHAPP_WEBHOOK_SECRET = "test-webhook-secret"
 mock_constants.REDIS_URL = "rediss://localhost:6379"
+mock_constants.RUNNER_GROUP_NAME = "RISE RISC-V Runners"
+mock_constants.K8S_KUBECONFIG = None
+mock_constants.ORG_CONFIG = {
+    152654596: {"name": "riseproject-dev", "max_workers": None, "pre_allocated": 0, "staging": True},
+    660779: {"name": "luhenry", "max_workers": 5, "pre_allocated": 0, "staging": False},
+}
+mock_constants.ALLOWED_ORGS = set(mock_constants.ORG_CONFIG.keys())
+mock_constants.STAGING_ORGS = {oid for oid, c in mock_constants.ORG_CONFIG.items() if c.get("staging")}
 
 sys.modules["constants"] = mock_constants
