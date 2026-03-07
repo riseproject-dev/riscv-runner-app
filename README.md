@@ -93,7 +93,7 @@ Worker: for each pending job:
   - ensure_runner_group(org, token) -> group_id
   - create_jit_runner_config(token, group_id, labels, org, name) -> jit_config
   - provision_runner(jit_config, name, image, pool, org_id) -> pod
-  - mark_provisioned(job_id, pod_name)
+  - remove_pending(job_id)
   - add_worker(org_id, k8s_pool, pod_name)
 ```
 

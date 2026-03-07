@@ -147,7 +147,7 @@ def demand_match():
 
             provision_runner(jit_config, runner_name, k8s_image, k8s_pool, org_id)
 
-            db.mark_provisioned(job_id, runner_name)
+            db.remove_pending(job_id)
             db.add_worker(org_id, k8s_pool, runner_name)
 
             # Update local cache

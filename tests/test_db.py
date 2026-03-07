@@ -6,7 +6,7 @@ from db import (
     complete_job,
     get_pool_demand,
     get_pending_jobs,
-    mark_provisioned,
+    remove_pending,
     add_worker,
     remove_worker,
     get_job,
@@ -119,16 +119,15 @@ def test_get_pool_demand(mock_init):
     assert workers == 1
 
 
-# --- mark_provisioned ---
+# --- remove_pending ---
 
 @patch("db._init_client")
-def test_mark_provisioned(mock_init):
+def test_remove_pending(mock_init):
     r, pipe = make_mock_redis()
     mock_init.return_value = r
 
-    mark_provisioned(111, "runner-pod-1")
+    remove_pending(111)
 
-    pipe.hset.assert_called_once()
     pipe.zrem.assert_called_once_with(f"{ENV_PREFIX}:pending", "111")
     pipe.execute.assert_called_once()
 

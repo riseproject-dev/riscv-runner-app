@@ -57,7 +57,7 @@ def test_demand_match_provisions_job(mock_jit, mock_group, mock_auth, mock_provi
     demand_match()
 
     mock_provision.assert_called_once()
-    mock_db.mark_provisioned.assert_called_once()
+    mock_db.remove_pending.assert_called_once()
     mock_db.add_worker.assert_called_once()
 
 
@@ -124,7 +124,7 @@ def test_demand_match_handles_provision_failure(mock_jit, mock_group, mock_auth,
 
     demand_match()  # should not raise
 
-    mock_db.mark_provisioned.assert_not_called()
+    mock_db.remove_pending.assert_not_called()
     mock_db.add_worker.assert_not_called()
 
 

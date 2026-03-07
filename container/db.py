@@ -138,15 +138,13 @@ def get_pending_jobs():
     return r.zrange(_pending_key(), 0, -1)
 
 
-def mark_provisioned(job_id, pod_name):
-    """Mark a job as running after provisioning. ZREM from pending, update status."""
+def remove_pending(job_id):
+    """Remove a job from pending after provisioning runner in org. ZREM from pending."""
     r = _init_client()
-    key = _job_key(job_id)
     pipe = r.pipeline()
-    pipe.hset(key, "status", "running")
     pipe.zrem(_pending_key(), str(job_id))
     pipe.execute()
-    logger.info("Job %s marked provisioned (pod=%s)", job_id, pod_name)
+    logger.debug("Removed pending job %s", job_id)
 
 
 def add_worker(org_id, k8s_pool, pod_name):
