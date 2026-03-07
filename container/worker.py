@@ -202,10 +202,11 @@ def cleanup_jobs():
 
 def dump_state():
     """Log the current state of demand and supply per pool."""
-    pool_stats = db.get_all_pool_stats()
-    logger.info("State: pending+running=%d", sum(jobs for _, _, jobs, _ in pool_stats))
-    for org_id, k8s_pool, jobs, workers in pool_stats:
-        logger.info("  pool %s:%s — jobs=%d, workers=%d", org_id, k8s_pool, jobs, workers)
+    pool_usage = db.get_pool_usage()
+    logger.info("State: pending+running=%d", sum(len(info["jobs"]) for info in pool_usage.values()))
+    for (org_id, k8s_pool), info in sorted(pool_usage.items()):
+        logger.info("  pool %s:%s — jobs=%d, workers=%d",
+                     org_id, k8s_pool, len(info["jobs"]), len(info["workers"]))
 
 
 def worker_loop():

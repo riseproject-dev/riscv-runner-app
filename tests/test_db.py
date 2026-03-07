@@ -30,7 +30,7 @@ def test_store_job_new(mock_init):
     mock_init.return_value = r
     r.hsetnx.return_value = True  # new job
 
-    result = store_job(111, 1000, "test-org", "test-org/repo", 999, ["rise"], "scw-em-rv1", "img:latest")
+    result = store_job(111, 1000, "test-org", "test-org/repo", 999, ["rise"], "scw-em-rv1", "img:latest", "https://github.com/test-org/repo/actions/runs/1/job/111")
 
     assert result is True
     r.hsetnx.assert_called_once()
@@ -46,7 +46,7 @@ def test_store_job_duplicate(mock_init):
     mock_init.return_value = r
     r.hsetnx.return_value = False  # duplicate
 
-    result = store_job(111, 1000, "test-org", "test-org/repo", 999, ["rise"], "scw-em-rv1", "img:latest")
+    result = store_job(111, 1000, "test-org", "test-org/repo", 999, ["rise"], "scw-em-rv1", "img:latest", "https://github.com/test-org/repo/actions/runs/1/job/111")
 
     assert result is False
     pipe.execute.assert_not_called()

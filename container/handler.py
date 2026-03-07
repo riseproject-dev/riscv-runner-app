@@ -170,6 +170,33 @@ def health():
     return "ok"
 
 
+@app.route("/usage", methods=['GET'])
+def usage():
+    pool_usage = db.get_pool_usage()
+    lines = []
+    lines.append("<pre>")
+    for (_, k8s_pool), info in sorted(pool_usage.items()):
+        lines.append(f"=== {info['org_name']} / {k8s_pool} ===")
+        if info["jobs"]:
+            lines.append(f"  Jobs ({len(info['jobs'])}):")
+            status_sorted_key = {"pending": 0, "running": 1, "completed": 2}
+            for job in sorted(info["jobs"], key=lambda j: (status_sorted_key.get(j["status"], 3), j["job_id"])):
+                lines.append(f"    - {job['job_id']}  [{job['status']}]  <a href=\"{job['html_url']}\">{job['html_url']}</a>")
+        else:
+            lines.append("  Jobs: none")
+        if info["workers"]:
+            lines.append(f"  Workers ({len(info['workers'])}):")
+            for w in sorted(info["workers"]):
+                lines.append(f"    - {w}")
+        else:
+            lines.append("  Workers: none")
+        lines.append("")
+    if not lines:
+        lines.append("No active pools.")
+    lines.append("</pre>")
+    return make_response("\n".join(lines), 200, {"Content-Type": "text/html"})
+
+
 @app.route("/", methods=['POST'])
 def webhook():
     body = check_webhook_signature(request.headers, request.get_data(as_text=True))
@@ -204,6 +231,10 @@ def webhook():
         if not repo_full_name:
             raise WebhookError(400, "Repository full name is missing in payload")
 
+        html_url = payload["workflow_job"]["html_url"]
+        if not html_url:
+            raise WebhookError(400, "HTML URL is missing in payload")
+
         stored = db.store_job(
             job_id=job_id,
             org_id=org_id,
@@ -213,6 +244,7 @@ def webhook():
             labels=job_labels,
             k8s_pool=k8s_pool,
             k8s_image=k8s_image,
+            html_url=html_url,
         )
 
         if stored:
