@@ -47,10 +47,12 @@ GitHub (workflow_job webhook)
   |
   v
 Webhook Handler (handler.py)
+  |  - Proxies webhooks to staging for staging orgs (prod only)
   |  - Verifies webhook signature
   |  - Validates labels, authorizes org
   |  - Resolves labels -> (k8s_pool, k8s_image)
   |  - Writes job to Redis
+  |  - Serves /usage (per-pool jobs and workers)
   |  - NO GitHub API calls, NO k8s calls
   |
   v
@@ -62,8 +64,10 @@ Redis (demand + supply state)
   v
 Background Worker (worker.py)
   |  - GH reconciliation: sync Redis with GitHub job status
-  |  - Demand matching: provision runners where demand > supply
   |  - Pod cleanup: delete Succeeded/Failed pods, remove from worker sets
+  |  - Job cleanup: remove completed job hashes older than 5 minutes
+  |  - Demand matching: provision runners where demand > supply
+  |  - State logging: log per-pool job/worker counts
   |
   v
 Kubernetes (runner pods)
@@ -97,13 +101,22 @@ Worker: for each pending job:
   - add_worker(org_id, k8s_pool, pod_name)
 ```
 
+### Sequence: In-progress webhook
+
+```
+GitHub -> Handler: workflow_job (action=in_progress)
+Handler -> Redis: update_job_running(job_id)
+  - Update hash status=running
+Handler -> GitHub: 200 OK
+```
+
 ### Sequence: Completed webhook
 
 ```
 GitHub -> Handler: workflow_job (action=completed)
 Handler -> Redis: complete_job(job_id)
   - SREM from pool:jobs
-  - ZREM from pending (if still there)
+  - ZREM from pending (if still there, happens if job was cancelled before being running)
   - Update hash status=completed
 Handler -> GitHub: 200 OK
 ```
@@ -112,13 +125,13 @@ Handler -> GitHub: 200 OK
 
 Cancellation is passive. When a job is cancelled on GitHub:
 1. The `completed` webhook fires and removes the job from pool:jobs
-2. If a worker was already provisioned, it picks up the next job or times out
+2. If a worker was already provisioned, it picks up another job in the org or times out
 3. GH reconciliation detects stale jobs within ~15s and cleans them up
 
 ### Job lifecycle state machine
 
 ```
-queued webhook         worker provisions       completed webhook
+queued webhook      in_progress webhook     completed webhook
     |                       |                       |
     v                       v                       v
  PENDING  ----------->  RUNNING  ----------->  COMPLETED
@@ -147,7 +160,7 @@ All keys are prefixed with `prod:` or `staging:` depending on environment.
 | `{env}:pool:{org_id}:{k8s_pool}:workers` | SET | pod_names | Supply: provisioned pods for this pool |
 | `{env}:pending` | ZSET | job_ids scored by created_at | Global FIFO queue of all pending jobs |
 
-**Job hash fields**: `job_id`, `org_id`, `org_name`, `repo_full_name`, `installation_id`, `labels` (JSON), `k8s_pool`, `k8s_image`, `status` (pending/running/completed), `created_at`
+**Job hash fields**: `job_id`, `org_id`, `org_name`, `repo_full_name`, `installation_id`, `job_labels` (JSON), `k8s_pool`, `k8s_image`, `html_url`, `status` (pending/running/completed), `created_at`
 
 ### Demand matching algorithm
 
@@ -173,6 +186,14 @@ Per-org configuration is defined in `ORG_CONFIG` in `constants.py`:
 | `max_workers` | int or None | Maximum concurrent workers across all pools. None = unlimited |
 | `pre_allocated` | int | Reserved for future use |
 | `staging` | bool | If true, webhooks are proxied from prod to staging |
+
+### HTTP routes
+
+| Route | Method | Description |
+|-------|--------|-------------|
+| `/` | POST | Webhook endpoint for `workflow_job` events |
+| `/health` | GET | Health check (returns `ok`) |
+| `/usage` | GET | Human-readable view of per-pool jobs and workers |
 
 ### Key files
 
