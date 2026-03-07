@@ -36,7 +36,6 @@ def test_store_job_new(mock_init):
     r.hsetnx.assert_called_once()
     pipe.hset.assert_called_once()
     pipe.sadd.assert_any_call(f"{ENV_PREFIX}:pool:1000:scw-em-rv1:jobs", "111")
-    pipe.sadd.assert_any_call(f"{ENV_PREFIX}:orgs", "1000")
     pipe.zadd.assert_called_once()
     pipe.execute.assert_called_once()
 

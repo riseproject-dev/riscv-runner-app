@@ -90,8 +90,7 @@ Extract GitHub API functions from `handler.py`:
 - `complete_job(job_id)` → prev_status
   - SREM from `pool:jobs`, ZREM from `pending`, update hash status=completed
 
-**Worker operations:**
-- `get_org_ids()` → set
+**Worker operations:**=
 - `get_pool_demand(org_id, k8s_pool)` → (job_count, worker_count)
 - `get_total_workers_for_org(org_id)` → total worker count across all pools (for max_workers check)
 - `get_pending_jobs()` → list of job_ids from `{env}:pending` ZSET in FIFO order (ZRANGE)

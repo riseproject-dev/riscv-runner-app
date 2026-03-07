@@ -17,20 +17,10 @@ ENV_PREFIX = "prod" if PROD else "staging"
 
 def _job_key(job_id):
     return f"{ENV_PREFIX}:job:{job_id}"
-
-
 def _pool_jobs_key(org_id, k8s_pool):
     return f"{ENV_PREFIX}:pool:{org_id}:{k8s_pool}:jobs"
-
-
 def _pool_workers_key(org_id, k8s_pool):
     return f"{ENV_PREFIX}:pool:{org_id}:{k8s_pool}:workers"
-
-
-def _orgs_key():
-    return f"{ENV_PREFIX}:orgs"
-
-
 def _pending_key():
     return f"{ENV_PREFIX}:pending"
 
@@ -70,7 +60,6 @@ def store_job(job_id, org_id, org_name, repo_full_name, installation_id, labels,
     })
     pipe.sadd(_pool_jobs_key(org_id, k8s_pool), str(job_id))
     pipe.zadd(_pending_key(), {str(job_id): now})
-    pipe.sadd(_orgs_key(), str(org_id))
     pipe.execute()
 
     logger.info("Stored job %s for org %s pool %s", job_id, org_name, k8s_pool)
@@ -123,11 +112,6 @@ def complete_job(job_id):
 
 
 # --- Worker operations ---
-
-def get_org_ids():
-    """Return all org IDs with tracked jobs."""
-    r = _init_client()
-    return r.smembers(_orgs_key())
 
 
 def get_pool_demand(org_id, k8s_pool):

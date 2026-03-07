@@ -145,7 +145,6 @@ All keys are prefixed with `prod:` or `staging:` depending on environment.
 | `{env}:job:{job_id}` | HASH | job data | Per-job metadata |
 | `{env}:pool:{org_id}:{k8s_pool}:jobs` | SET | job_ids | Demand: pending+running jobs for this pool |
 | `{env}:pool:{org_id}:{k8s_pool}:workers` | SET | pod_names | Supply: provisioned pods for this pool |
-| `{env}:orgs` | SET | org_ids | All orgs with tracked jobs |
 | `{env}:pending` | ZSET | job_ids scored by created_at | Global FIFO queue of all pending jobs |
 
 **Job hash fields**: `job_id`, `org_id`, `org_name`, `repo_full_name`, `installation_id`, `labels` (JSON), `k8s_pool`, `k8s_image`, `status` (pending/running/completed), `created_at`
