@@ -34,7 +34,7 @@ def _init_client():
 
 # --- Handler operations ---
 
-def store_job(job_id, org_id, org_name, repo_full_name, installation_id, labels, k8s_pool, k8s_image):
+def store_job(job_id, org_id, org_name, repo_full_name, installation_id, labels, k8s_pool, k8s_image, html_url):
     """Store a new job. Returns True if created, False if duplicate."""
     r = _init_client()
     key = _job_key(job_id)
@@ -56,6 +56,7 @@ def store_job(job_id, org_id, org_name, repo_full_name, installation_id, labels,
         "job_labels": json.dumps(labels),
         "k8s_pool": k8s_pool,
         "k8s_image": k8s_image,
+        "html_url": html_url,
         "created_at": str(now),
     })
     pipe.sadd(_pool_jobs_key(org_id, k8s_pool), str(job_id))
@@ -184,22 +185,36 @@ def get_all_job_ids():
     return all_ids
 
 
-def get_all_pool_stats():
-    """Return per-pool (org_id, k8s_pool, job_count, worker_count) stats."""
+def get_pool_usage():
+    """Return detailed usage: {(org_id, pool): {org_name, jobs: [{job_id, status, repo}], workers: [name]}}."""
     r = _init_client()
-    pools = {}
+    result = {}
     for key in r.scan_iter(match=f"{ENV_PREFIX}:pool:*:jobs"):
-        # key format: {env}:pool:{org_id}:{k8s_pool}:jobs
         parts = key.split(":")
         org_id, k8s_pool = parts[2], parts[3]
-        pools.setdefault((org_id, k8s_pool), [0, 0])
-        pools[(org_id, k8s_pool)][0] = r.scard(key)
+        job_ids = r.smembers(key)
+        jobs = []
+        org_name = org_id
+        for jid in job_ids:
+            data = r.hgetall(_job_key(jid))
+            if data:
+                if data.get("org_name"):
+                    org_name = data["org_name"]
+                jobs.append({
+                    "job_id": jid,
+                    "status": data.get("status", "unknown"),
+                    "html_url": data.get("html_url", ""),
+                })
+        workers = list(r.smembers(_pool_workers_key(org_id, k8s_pool)))
+        result[(org_id, k8s_pool)] = {"org_name": org_name, "jobs": jobs, "workers": workers}
+    # Also pick up pools that only have workers but no jobs
     for key in r.scan_iter(match=f"{ENV_PREFIX}:pool:*:workers"):
         parts = key.split(":")
         org_id, k8s_pool = parts[2], parts[3]
-        pools.setdefault((org_id, k8s_pool), [0, 0])
-        pools[(org_id, k8s_pool)][1] = r.scard(key)
-    return [(org_id, k8s_pool, jobs, workers) for (org_id, k8s_pool), (jobs, workers) in pools.items()]
+        if (org_id, k8s_pool) not in result:
+            workers = list(r.smembers(key))
+            result[(org_id, k8s_pool)] = {"org_name": org_id, "jobs": [], "workers": workers}
+    return result
 
 
 def iter_completed_jobs():

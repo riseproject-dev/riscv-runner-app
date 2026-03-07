@@ -125,7 +125,7 @@ def test_webhook_queued_stores_job(mock_store, mock_connect):
 
     payload = {
         "action": "queued",
-        "workflow_job": {"id": 12345, "name": "test", "labels": ["ubuntu-24.04-riscv"]},
+        "workflow_job": {"id": 12345, "name": "test", "labels": ["ubuntu-24.04-riscv"], "html_url": "https://github.com/riseproject-dev/sample/actions/runs/1/job/12345"},
         "repository": {"id": 100, "full_name": "riseproject-dev/sample", "owner": {"id": list(ALLOWED_ORGS)[0], "login": "riseproject-dev"}},
         "installation": {"id": 999},
     }
@@ -150,6 +150,7 @@ def test_webhook_queued_stores_job(mock_store, mock_connect):
             labels=["ubuntu-24.04-riscv"],
             k8s_pool="scw-em-rv1",
             k8s_image="cloudv10x/github-actions-riscv:docker-ubuntu-2.331.0",
+            html_url="https://github.com/riseproject-dev/sample/actions/runs/1/job/12345",
         )
 
 
