@@ -208,4 +208,8 @@ def iter_completed_jobs():
     for key in r.scan_iter(match=f"{ENV_PREFIX}:job:*"):
         data = r.hgetall(key)
         if data.get("status") == "completed":
-            yield data.get("job_id"), data
+            job_id = data.get("job_id")
+            # There are some old job hashes without job_id field
+            if job_id is None:
+                job_id = key.split(":")[-1]
+            yield job_id, data
