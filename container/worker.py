@@ -7,7 +7,7 @@ import time
 import traceback
 
 import db
-from constants import ORG_CONFIG, RUNNER_GROUP_NAME
+from constants import *
 from github import (
     authenticate_app,
     create_jit_runner_config,
@@ -139,7 +139,7 @@ def demand_match():
         # Provision
         try:
             suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=9))
-            runner_name = f"rise-riscv-runner-{org_id}-{suffix}"
+            runner_name = f"rise-riscv-runner%s-{org_id}-{suffix}" % ("" if PROD else "-staging")
 
             token = authenticate_app(int(installation_id))
             group_id = ensure_runner_group(org_name, token, RUNNER_GROUP_NAME)
@@ -185,22 +185,25 @@ def cleanup_pods():
         if org_id and k8s_pool:
             db.remove_worker(org_id, k8s_pool, pod_name)
 
-    # Clean up old completed job hashes
-    active_ids = db.get_all_job_ids()
+def cleanup_jobs():
+    """Clean up old completed job hashes."""
+    active_job_ids = db.get_all_job_ids()
     for job_id, data in db.iter_completed_jobs():
-        if job_id and job_id not in active_ids:
+        if job_id and job_id not in active_job_ids:
             created_at = float(data.get("created_at", 0))
             if time.time() - created_at > 300:  # 5 minutes
+                logger.debug("Checking completed job %s for cleanup: job not active for more than 5 minutes", job_id)
                 db.cleanup_job(job_id)
+            else:
+                logger.debug("Checking completed job %s for cleanup: job not active, but for less than 5 minutes", job_id)
+        else:
+            logger.debug("Checking completed job %s for cleanup: job still active, skipping", job_id)
 
 
 def dump_state():
     """Log the current state of demand and supply per pool."""
-    pending_count = len(db.get_pending_jobs())
     pool_stats = db.get_all_pool_stats()
-    if not pool_stats and pending_count == 0:
-        return
-    logger.info("State: pending=%d", pending_count)
+    logger.info("State: pending+running=%d", sum(jobs for _, _, jobs, _ in pool_stats))
     for org_id, k8s_pool, jobs, workers in pool_stats:
         logger.info("  pool %s:%s — jobs=%d, workers=%d", org_id, k8s_pool, jobs, workers)
 
@@ -211,6 +214,7 @@ def worker_loop():
         try:
             gh_reconcile()
             cleanup_pods()
+            cleanup_jobs()
             demand_match()
             dump_state()
         except Exception as e:

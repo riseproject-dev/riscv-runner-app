@@ -155,9 +155,9 @@ def match_labels_to_k8s(job_labels):
     Returns (k8s_pool, k8s_image) where k8s_pool is the board name string
     used as Redis pool key and pod label.
     """
-    if "ubuntu-24.04-riscv" in job_labels:
+    if job_labels == ["ubuntu-24.04-riscv"]:
         return "scw-em-rv1", "cloudv10x/github-actions-riscv:docker-ubuntu-2.331.0"
-    elif "ubuntu-24.04-riscv-rvv" in job_labels:
+    elif job_labels == ["ubuntu-24.04-riscv-rvv"]:
         return "cloudv10x-rvv", "cloudv10x/github-actions-riscv:docker-ubuntu-2.331.0"
     else:
         raise WebhookError(200, f"Ignoring job: missing required platform label (got {job_labels})")
