@@ -88,7 +88,7 @@ jobs:
         if: steps.env.outputs.tag == 'staging'
         env:
           GH_TOKEN: ${{ secrets.RISCV_RUNNER_SAMPLE_ACCESS_TOKEN }}
-          GH_REPO: riseproject-dev/riscv-runner-app-sample
+          GH_REPO: riseproject-dev/riscv-runner-sample
           GH_WORKFLOW: hello.yml
         run: |
           gh workflow run ${GH_WORKFLOW} --repo ${GH_REPO}
