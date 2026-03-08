@@ -94,6 +94,8 @@ def demand_match():
         logger.debug("No pending jobs to process")
         return
 
+    logger.debug("Processing %d pending jobs: [%s]", len(pending_job_ids), ', '.join(pending_job_ids))
+
     # Cache per-org worker counts
     org_worker_counts = {}
 
@@ -141,27 +143,26 @@ def demand_match():
             logger.debug("Job %s: no k8s capacity for pool %s", job_id, k8s_pool)
             continue
 
+        suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=9))
+        runner_name = f"rise-riscv-runner%s-{org_id}-{suffix}" % ("" if PROD else "-staging")
+
         # Provision
         try:
-            suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=9))
-            runner_name = f"rise-riscv-runner%s-{org_id}-{suffix}" % ("" if PROD else "-staging")
-
             token = authenticate_app(int(installation_id))
             group_id = ensure_runner_group(org_name, token, RUNNER_GROUP_NAME)
             jit_config = create_jit_runner_config(token, group_id, labels, org_name, runner_name)
 
             provision_runner(jit_config, runner_name, k8s_image, k8s_pool, org_id)
 
-            db.remove_pending(job_id)
             db.add_worker(org_id, k8s_pool, runner_name)
 
             # Update local cache
             org_worker_counts[org_id] = org_worker_counts.get(org_id, 0) + 1
 
-            logger.info("Provisioned %s for org=%s pool=%s job=%s", runner_name, org_name, k8s_pool, job_id)
+            logger.info("Provisioned runner %s for org=%s pool=%s", runner_name, org_name, k8s_pool)
 
         except Exception as e:
-            logger.error("Failed to provision job %s: %s", job_id, e)
+            logger.error("Failed to provision runner %s for org=%s pool=%s", runner_name, org_name, k8s_pool)
 
 
 def cleanup_pods():

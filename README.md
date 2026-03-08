@@ -57,9 +57,8 @@ Webhook Handler (handler.py)
   |
   v
 Redis (demand + supply state)
-  |  - Job hashes: per-job metadata
+  |  - Job hashes: per-job metadata (pending state derived from status field)
   |  - Pool sets: jobs (demand) and workers (supply) per (org, k8s_pool)
-  |  - Pending ZSET: global FIFO queue
   |
   v
 Background Worker (worker.py)
@@ -79,7 +78,7 @@ Kubernetes (runner pods)
 GitHub -> Handler: workflow_job (action=queued)
 Handler: validate signature, labels, org
 Handler: match_labels_to_k8s(labels) -> (k8s_pool, k8s_image)
-Handler -> Redis: store_job() -> job hash + pool:jobs + pending ZSET
+Handler -> Redis: store_job() -> job hash + pool:jobs
 Handler: notify queue_event (wake worker)
 Handler -> GitHub: 200 OK
 ```
@@ -87,7 +86,7 @@ Handler -> GitHub: 200 OK
 ### Sequence: Worker provisioning
 
 ```
-Worker: get_pending_jobs() from pending ZSET (FIFO)
+Worker: get_pending_jobs() from pool job sets (filter status=pending, sort by created_at)
 Worker: for each pending job:
   - get_pool_demand(org_id, k8s_pool) -> (jobs, workers)
   - if jobs <= workers: skip (demand met)
@@ -97,7 +96,6 @@ Worker: for each pending job:
   - ensure_runner_group(org, token) -> group_id
   - create_jit_runner_config(token, group_id, labels, org, name) -> jit_config
   - provision_runner(jit_config, name, image, pool, org_id) -> pod
-  - remove_pending(job_id)
   - add_worker(org_id, k8s_pool, pod_name)
 ```
 
@@ -116,7 +114,6 @@ Handler -> GitHub: 200 OK
 GitHub -> Handler: workflow_job (action=completed)
 Handler -> Redis: complete_job(job_id)
   - SREM from pool:jobs
-  - ZREM from pending (if still there, happens if job was cancelled before being running)
   - Update hash status=completed
 Handler -> GitHub: 200 OK
 ```
@@ -158,7 +155,6 @@ All keys are prefixed with `prod:` or `staging:` depending on environment.
 | `{env}:job:{job_id}` | HASH | job data | Per-job metadata |
 | `{env}:pool:{org_id}:{k8s_pool}:jobs` | SET | job_ids | Demand: pending+running jobs for this pool |
 | `{env}:pool:{org_id}:{k8s_pool}:workers` | SET | pod_names | Supply: provisioned pods for this pool |
-| `{env}:pending` | ZSET | job_ids scored by created_at | Global FIFO queue of all pending jobs |
 
 **Job hash fields**: `job_id`, `org_id`, `org_name`, `repo_full_name`, `installation_id`, `job_labels` (JSON), `k8s_pool`, `k8s_image`, `html_url`, `status` (pending/running/completed), `created_at`
 
@@ -301,9 +297,6 @@ redis-cli SCARD staging:pool:{org_id}:{k8s_pool}:jobs
 
 # Check supply for a pool
 redis-cli SCARD staging:pool:{org_id}:{k8s_pool}:workers
-
-# List pending jobs
-redis-cli ZRANGE staging:pending 0 -1
 
 # View a job
 redis-cli HGETALL staging:job:{job_id}

@@ -6,7 +6,6 @@ from db import (
     complete_job,
     get_pool_demand,
     get_pending_jobs,
-    remove_pending,
     add_worker,
     remove_worker,
     get_job,
@@ -36,7 +35,6 @@ def test_store_job_new(mock_init):
     r.hsetnx.assert_called_once()
     pipe.hset.assert_called_once()
     pipe.sadd.assert_any_call(f"{ENV_PREFIX}:pool:1000:scw-em-rv1:jobs", "111")
-    pipe.zadd.assert_called_once()
     pipe.execute.assert_called_once()
 
 
@@ -90,7 +88,6 @@ def test_complete_job(mock_init):
     assert prev == "running"
     pipe.hset.assert_called_once()
     pipe.srem.assert_called_once_with(f"{ENV_PREFIX}:pool:1000:scw-em-rv1:jobs", "111")
-    pipe.zrem.assert_called_once_with(f"{ENV_PREFIX}:pending", "111")
     pipe.execute.assert_called_once()
 
 
@@ -119,17 +116,34 @@ def test_get_pool_demand(mock_init):
     assert workers == 1
 
 
-# --- remove_pending ---
+# --- get_pending_jobs ---
 
 @patch("db._init_client")
-def test_remove_pending(mock_init):
-    r, pipe = make_mock_redis()
+def test_get_pending_jobs(mock_init):
+    r, _ = make_mock_redis()
     mock_init.return_value = r
+    r.scan_iter.return_value = [f"{ENV_PREFIX}:pool:1000:scw-em-rv1:jobs"]
+    r.smembers.return_value = {"111", "222", "333"}
+    r.hgetall.side_effect = lambda key: {
+        f"{ENV_PREFIX}:job:111": {"status": "pending", "created_at": "1000002.0"},
+        f"{ENV_PREFIX}:job:222": {"status": "running", "created_at": "1000001.0"},
+        f"{ENV_PREFIX}:job:333": {"status": "pending", "created_at": "1000000.0"},
+    }.get(key, {})
 
-    remove_pending(111)
+    result = get_pending_jobs()
 
-    pipe.zrem.assert_called_once_with(f"{ENV_PREFIX}:pending", "111")
-    pipe.execute.assert_called_once()
+    assert result == ["333", "111"]  # sorted by created_at, running job excluded
+
+
+@patch("db._init_client")
+def test_get_pending_jobs_empty(mock_init):
+    r, _ = make_mock_redis()
+    mock_init.return_value = r
+    r.scan_iter.return_value = []
+
+    result = get_pending_jobs()
+
+    assert result == []
 
 
 # --- add/remove worker ---

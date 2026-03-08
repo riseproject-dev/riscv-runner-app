@@ -21,8 +21,6 @@ def _pool_jobs_key(org_id, k8s_pool):
     return f"{ENV_PREFIX}:pool:{org_id}:{k8s_pool}:jobs"
 def _pool_workers_key(org_id, k8s_pool):
     return f"{ENV_PREFIX}:pool:{org_id}:{k8s_pool}:workers"
-def _pending_key():
-    return f"{ENV_PREFIX}:pending"
 
 
 @functools.lru_cache(maxsize=1)
@@ -60,7 +58,6 @@ def store_job(job_id, org_id, org_name, repo_full_name, installation_id, labels,
         "created_at": str(now),
     })
     pipe.sadd(_pool_jobs_key(org_id, k8s_pool), str(job_id))
-    pipe.zadd(_pending_key(), {str(job_id): now})
     pipe.execute()
 
     logger.info("Stored job %s for org %s pool %s", job_id, org_name, k8s_pool)
@@ -89,7 +86,7 @@ def update_job_running(job_id):
 
 
 def complete_job(job_id):
-    """Complete a job: remove from pool sets and pending. Returns previous status or None."""
+    """Complete a job: remove from pool sets. Returns previous status or None."""
     r = _init_client()
     key = _job_key(job_id)
     data = r.hgetall(key)
@@ -105,7 +102,6 @@ def complete_job(job_id):
     pipe.hset(key, "status", "completed")
     if org_id and k8s_pool:
         pipe.srem(_pool_jobs_key(org_id, k8s_pool), str(job_id))
-    pipe.zrem(_pending_key(), str(job_id))
     pipe.execute()
 
     logger.info("Job %s status updated to completed (was %s)", job_id, prev_status)
@@ -133,18 +129,15 @@ def get_total_workers_for_org(org_id):
 
 
 def get_pending_jobs():
-    """Return all pending job IDs in FIFO order."""
+    """Return all pending job IDs in FIFO order (derived from job hashes)."""
     r = _init_client()
-    return r.zrange(_pending_key(), 0, -1)
-
-
-def remove_pending(job_id):
-    """Remove a job from pending after provisioning runner in org. ZREM from pending."""
-    r = _init_client()
-    pipe = r.pipeline()
-    pipe.zrem(_pending_key(), str(job_id))
-    pipe.execute()
-    logger.debug("Removed pending job %s", job_id)
+    pending = []
+    for key in r.scan_iter(match=f"{ENV_PREFIX}:pool:*:jobs"):
+        for job_id in r.smembers(key):
+            data = r.hgetall(_job_key(job_id))
+            if data.get("status") == "pending":
+                pending.append((job_id, float(data.get("created_at", 0))))
+    return [job_id for job_id, _ in sorted(pending, key=lambda x: x[1])]
 
 
 def add_worker(org_id, k8s_pool, pod_name):
