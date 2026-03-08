@@ -91,6 +91,7 @@ def demand_match():
     """
     pending_job_ids = db.get_pending_jobs()
     if not pending_job_ids:
+        logger.debug("No pending jobs to process")
         return
 
     # Cache per-org worker counts
@@ -98,7 +99,11 @@ def demand_match():
 
     for job_id in pending_job_ids:
         job = db.get_job(job_id)
-        if not job or job.get("status") != "pending":
+        if not job:
+            logger.debug("Job %s not found in DB, skipping", job_id)
+            continue
+        if job.get("status") != "pending":
+            logger.debug("Job %s status is %s, not pending, skipping", job_id, job.get("status"))
             continue
 
         org_id = job.get("org_id")
@@ -200,15 +205,6 @@ def cleanup_jobs():
             logger.debug("Checking completed job %s for cleanup: job still active, skipping", job_id)
 
 
-def dump_state():
-    """Log the current state of demand and supply per pool."""
-    pool_usage = db.get_pool_usage()
-    logger.info("State: pending+running=%d", sum(len(info["jobs"]) for info in pool_usage.values()))
-    for (org_id, k8s_pool), info in sorted(pool_usage.items()):
-        logger.info("  pool %s:%s — jobs=%d, workers=%d",
-                     org_id, k8s_pool, len(info["jobs"]), len(info["workers"]))
-
-
 def worker_loop():
     """Main worker loop."""
     while True:
@@ -217,7 +213,6 @@ def worker_loop():
             cleanup_pods()
             cleanup_jobs()
             demand_match()
-            dump_state()
         except Exception as e:
             logger.error("Worker error: %s\n%s", e, traceback.format_exc())
 
