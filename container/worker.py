@@ -7,20 +7,10 @@ import time
 import traceback
 
 import db
+import k8s
+import github as gh
+
 from constants import *
-from github import (
-    authenticate_app,
-    create_jit_runner_config,
-    ensure_runner_group,
-    get_job_status,
-    GitHubAPIError,
-)
-from k8s import (
-    delete_pod,
-    has_available_slot,
-    list_pods,
-    provision_runner,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +43,8 @@ def gh_reconcile():
 
     for installation_id, jobs in jobs_by_installation.items():
         try:
-            token = authenticate_app(int(installation_id))
-        except GitHubAPIError as e:
+            token = gh.authenticate_app(int(installation_id))
+        except gh.GitHubAPIError as e:
             logger.error("Failed to authenticate for installation %s: %s", installation_id, e)
             continue
 
@@ -65,8 +55,8 @@ def gh_reconcile():
                 continue
 
             try:
-                gh_status = get_job_status(repo, job_id, token)
-            except GitHubAPIError as e:
+                gh_status = gh.get_job_status(repo, job_id, token)
+            except gh.GitHubAPIError as e:
                 logger.error("Failed to get status for job %s: %s", job_id, e)
                 continue
 
@@ -139,7 +129,7 @@ def demand_match():
 
         # Check k8s capacity
         node_selector = {"riseproject.dev/board": k8s_pool}
-        if not has_available_slot(node_selector):
+        if not k8s.has_available_slot(node_selector):
             logger.debug("Job %s: no k8s capacity for pool %s", job_id, k8s_pool)
             continue
 
@@ -148,11 +138,11 @@ def demand_match():
 
         # Provision
         try:
-            token = authenticate_app(int(installation_id))
-            group_id = ensure_runner_group(org_name, token, RUNNER_GROUP_NAME)
-            jit_config = create_jit_runner_config(token, group_id, labels, org_name, runner_name)
+            token = gh.authenticate_app(int(installation_id))
+            group_id = gh.ensure_runner_group(org_name, token, RUNNER_GROUP_NAME)
+            jit_config = gh.create_jit_runner_config(token, group_id, labels, org_name, runner_name)
 
-            provision_runner(jit_config, runner_name, k8s_image, k8s_pool, org_id)
+            k8s.provision_runner(jit_config, runner_name, k8s_image, k8s_pool, org_id)
 
             db.add_worker(org_id, k8s_pool, runner_name)
 
@@ -172,7 +162,7 @@ def cleanup_pods():
     Lists all runner pods, deletes those in Succeeded/Failed phase, and
     removes them from their pool:workers set.
     """
-    pods = list_pods()
+    pods = k8s.list_pods()
     for pod in pods:
         if pod.status.phase not in ("Succeeded", "Failed"):
             continue
@@ -183,7 +173,7 @@ def cleanup_pods():
         k8s_pool = pod_labels.get("riseproject.com/board")
 
         try:
-            delete_pod(pod)
+            k8s.delete_pod(pod)
         except Exception as e:
             logger.error("Failed to delete pod %s: %s", pod_name, e)
             continue
