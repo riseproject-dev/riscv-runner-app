@@ -169,7 +169,6 @@ def health():
 def usage():
     pool_usage = db.get_pool_usage()
     lines = []
-    lines.append("<pre>")
     for (_, k8s_pool), info in sorted(pool_usage.items()):
         lines.append(f"=== {info['org_name']} / {k8s_pool} ===")
         if info["jobs"]:
@@ -188,8 +187,7 @@ def usage():
         lines.append("")
     if not lines:
         lines.append("No active pools.")
-    lines.append("</pre>")
-    return make_response("\n".join(lines), 200, {"Content-Type": "text/html"})
+    return make_response("<pre>%s</pre>" % ("\n".join(lines)), 200, {"Content-Type": "text/html"})
 
 
 @app.route("/", methods=['POST'])
