@@ -125,11 +125,6 @@ def check_webhook_event(body):
         logger.debug("Ignoring action: %s", action)
         raise WebhookError(200, f"Ignoring action: {action}")
 
-    logger.info("Received %s workflow_job id=%s name=%s repo=%s labels=%s",
-                action, payload["workflow_job"]["id"], payload["workflow_job"]["name"],
-                payload["repository"]["full_name"],
-                payload["workflow_job"]["labels"])
-
     return payload, action
 
 
@@ -213,6 +208,11 @@ def webhook():
 
     # Make sure the required labels are present; Filters out unsupported jobs early
     k8s_pool, k8s_image = match_labels_to_k8s(job_labels)
+
+    logger.info("Received %s workflow_job id=%s name=%s repo=%s labels=%s",
+                action, job_id, payload["workflow_job"]["name"],
+                payload["repository"]["full_name"],
+                payload["workflow_job"]["labels"])
 
     if action == "queued":
         installation_id = payload["installation"]["id"]
