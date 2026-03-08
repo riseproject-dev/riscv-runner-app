@@ -120,7 +120,7 @@ def demand_match():
             continue
 
         # Check org max_workers cap
-        org_config = ORG_CONFIG.get(int(org_id), {})
+        org_config = ORG_CONFIG.get(int(org_id), {"max_workers": 20}) # Default max_workers=20 for unknown orgs
         max_workers = org_config.get("max_workers")
         if max_workers is not None:
             if org_id not in org_worker_counts:
