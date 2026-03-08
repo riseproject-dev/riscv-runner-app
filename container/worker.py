@@ -162,7 +162,14 @@ def cleanup_pods():
     Lists all runner pods, deletes those in Succeeded/Failed phase, and
     removes them from their pool:workers set.
     """
+    # First get the list of workers from redis, then list pods from k8s. This is
+    # to avoid the race condition where we delete a pod that was just provisioned
+    # but not yet added to Redis, which would cause it to be recreated immediately.
+    # By getting the list of workers first, we ensure that we only delete pods
+    # that are known to Redis as active workers.
+    workers = list(db.iter_workers())
     pods = k8s.list_pods()
+
     for pod in pods:
         if pod.status.phase not in ("Succeeded", "Failed"):
             continue
@@ -179,6 +186,11 @@ def cleanup_pods():
             continue
 
         if org_id and k8s_pool:
+            db.remove_worker(org_id, k8s_pool, pod_name)
+
+    for org_id, k8s_pool, pod_name in workers:
+        if not any(p.metadata.name == pod_name for p in pods):
+            logger.warning("Worker %s in org %s pool %s has no corresponding pod, removing from DB", pod_name, org_id, k8s_pool)
             db.remove_worker(org_id, k8s_pool, pod_name)
 
 def cleanup_jobs():

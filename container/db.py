@@ -156,6 +156,15 @@ def remove_worker(org_id, k8s_pool, pod_name):
     logger.debug("Removed worker %s from pool %s:%s", pod_name, org_id, k8s_pool)
 
 
+def iter_workers():
+    """Yield (org_id, k8s_pool, pod_name) for all workers."""
+    r = _init_client()
+    for key in r.scan_iter(match=f"{ENV_PREFIX}:pool:*:workers"):
+        parts = key.split(":")
+        org_id, k8s_pool = parts[2], parts[3]
+        for pod_name in r.smembers(key):
+            yield org_id, k8s_pool, pod_name
+
 def get_job(job_id):
     """Return the full job hash."""
     r = _init_client()
