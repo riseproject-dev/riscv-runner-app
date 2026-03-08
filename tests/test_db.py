@@ -106,9 +106,9 @@ def test_complete_job_not_found(mock_init):
 
 @patch("db._init_client")
 def test_get_pool_demand(mock_init):
-    r, _ = make_mock_redis()
+    r, pipe = make_mock_redis()
     mock_init.return_value = r
-    r.scard.side_effect = [3, 1]  # 3 jobs, 1 worker
+    pipe.execute.return_value = [3, 1]  # 3 jobs, 1 worker
 
     jobs, workers = get_pool_demand(1000, "scw-em-rv1")
 

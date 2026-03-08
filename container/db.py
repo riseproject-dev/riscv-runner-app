@@ -114,8 +114,10 @@ def complete_job(job_id):
 def get_pool_demand(org_id, k8s_pool):
     """Return (job_count, worker_count) for a pool."""
     r = _init_client()
-    job_count = r.scard(_pool_jobs_key(org_id, k8s_pool))
-    worker_count = r.scard(_pool_workers_key(org_id, k8s_pool))
+    pipe = r.pipeline()
+    pipe.scard(_pool_jobs_key(org_id, k8s_pool))
+    pipe.scard(_pool_workers_key(org_id, k8s_pool))
+    job_count, worker_count = pipe.execute()
     return job_count, worker_count
 
 
