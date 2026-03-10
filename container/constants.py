@@ -15,9 +15,29 @@ REDIS_URL = os.environ["REDIS_URL"]
 
 RUNNER_GROUP_NAME = "RISE RISC-V Runners"
 
+RISEPROJECT_DEV_ORG_ID = 152654596 # github.com/riseproject-dev
+PYTORCH_ORG_ID = 21003710 # github.com/pytorch
+GGML_ORG_ORG_ID = 134263123 # github.com/ggml-org (for llama.cpp)
+
 ORG_CONFIG = {
-    152654596: {"name": "riseproject-dev", "max_workers": None, "pre_allocated": 0, "staging": True},
-    660779: {"name": "luhenry", "max_workers": 5, "pre_allocated": 0, "staging": False},
+    RISEPROJECT_DEV_ORG_ID: {
+        "name": "riseproject-dev",
+        "max_workers": None,
+        "pre_allocated": 0,
+        "staging": True,
+    },
+    PYTORCH_ORG_ID: {
+        "name": "pytorch",
+        "max_workers": 20,
+        "pre_allocated": 0,
+        "staging": False,
+    },
+    GGML_ORG_ORG_ID: {
+        "name": "ggml-org",
+        "max_workers": 20,
+        "pre_allocated": 0,
+        "staging": False,
+    },
 }
 
 ALLOWED_ORGS = set(ORG_CONFIG.keys())

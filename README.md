@@ -30,6 +30,9 @@ Available platform labels:
 |--------|-------|-------------|
 | `ubuntu-24.04-riscv` | `scw-em-rv1` | Scaleway EM-RV1 RISC-V |
 | `ubuntu-24.04-riscv-rvv` | `cloudv10x-rvv` | CloudV10x RVV |
+| `ubuntu-26.04-riscv` | `scw-em-rv1` | Scaleway EM-RV1 RISC-V (Ubuntu 26.04) |
+| `ubuntu-26.04-riscv-rvv` | `cloudv10x-rvv` | CloudV10x RVV (Ubuntu 26.04) |
+| `linux.riscv64` | `scw-em-rv1` | PyTorch org only |
 
 ### Requirements
 
@@ -50,7 +53,7 @@ Webhook Handler (handler.py)
   |  - Proxies webhooks to staging for staging orgs (prod only)
   |  - Verifies webhook signature
   |  - Validates labels, authorizes org
-  |  - Resolves labels -> (k8s_pool, k8s_image)
+  |  - Resolves (org_id, labels) -> (k8s_pool, k8s_image)
   |  - Writes job to Redis
   |  - Serves /usage (per-pool jobs and workers)
   |  - NO GitHub API calls, NO k8s calls
@@ -228,7 +231,7 @@ pip install -r requirements-dev.txt
 
 Run tests:
 ```bash
-PYTHONPATH=container pytest
+source .venv/bin/activate && PYTHONPATH=container python3 -m pytest
 ```
 
 Tests mock Redis and Kubernetes -- no live services are required.

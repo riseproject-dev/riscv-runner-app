@@ -40,22 +40,35 @@ def provision_runner(jit_config, runner_name, k8s_image, k8s_pool, org_id):
                 "nodeSelector": node_selector,
                 # 24h queue limit + 5d execution limit + 2h buffer = 525600s
                 "activeDeadlineSeconds": 525600,
-                "containers": [{
-                    "name": "runner",
-                    "image": k8s_image,
-                    "command": ["/bin/bash", "-eux", "-o", "pipefail", "-c"],
-                    "args": [
-                        f"./run.sh --jitconfig {jit_config}"
-                    ],
-                    "env": [
-                        {"name": "GITHUB_ACTIONS_RUNNER_TRACE", "value": "1"},
-                    ],
-                    "resources": {
-                        "limits": {
-                            "riseproject.com/runner": "1",
+                "containers": [
+                    {
+                        "name": "runner",
+                        "image": k8s_image,
+                        "command": ["/bin/bash", "-eux", "-o", "pipefail", "-c"],
+                        "args": [
+                            f"./run.sh --jitconfig {jit_config}"
+                        ],
+                        "env": [
+                            {"name": "GITHUB_ACTIONS_RUNNER_TRACE", "value": "1"},
+                            {"name": "DOCKER_HOST", "value": "tcp://localhost:2376"},
+                            {"name": "DOCKER_TLS_VERIFY", "value": "0"},
+                        ],
+                        "resources": {
+                            "limits": {
+                                "riseproject.com/runner": "1",
+                            }
                         }
-                    }
-                }],
+                    },
+                    {
+                        # Docker-in-Docker sidecar for sibling container to run DinD-enabled jobs
+                        "name": "dind",
+                        "image": "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:dind",
+                        "securityContext": {"privileged": True},
+                        "env": [
+                            {"name": "DOCKER_TLS_CERTDIR", "value": ""}, # disables TLS generation entirely
+                        ],
+                    },
+                ],
                 "restartPolicy": "Never"
             }
         }

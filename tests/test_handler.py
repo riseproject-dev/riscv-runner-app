@@ -75,7 +75,7 @@ def test_invalid_json():
 # --- Organization authorization ---
 
 def test_authorized_user():
-    org_id = list(ALLOWED_ORGS)[0]
+    org_id = 152654596
     payload = {"repository": {"owner": {"id": org_id, "login": "riseproject-dev"}}}
     result = authorize_organization(payload)
     assert result == org_id
@@ -92,26 +92,26 @@ def test_unauthorized_user():
 # --- Label matching ---
 
 def test_match_labels_riscv():
-    k8s_pool, k8s_image = match_labels_to_k8s(["ubuntu-24.04-riscv"])
+    k8s_pool, k8s_image = match_labels_to_k8s(0, ["ubuntu-24.04-riscv"])
     assert k8s_pool == "scw-em-rv1"
-    assert k8s_image == "cloudv10x/github-actions-riscv:docker-ubuntu-2.331.0"
+    assert k8s_image == "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0"
 
 
 def test_match_labels_rvv():
-    k8s_pool, k8s_image = match_labels_to_k8s(["ubuntu-24.04-riscv-rvv"])
+    k8s_pool, k8s_image = match_labels_to_k8s(0, ["ubuntu-24.04-riscv-rvv"])
     assert k8s_pool == "cloudv10x-rvv"
-    assert k8s_image == "cloudv10x/github-actions-riscv:docker-ubuntu-2.331.0"
+    assert k8s_image == "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0"
 
 
 def test_match_labels_unsupported():
     with pytest.raises(WebhookError) as exc:
-        match_labels_to_k8s(["unsupported-label"])
+        match_labels_to_k8s(0, ["unsupported-label"])
     assert "missing required platform label" in exc.value.message
 
 
 def test_match_labels_missing_platform():
     with pytest.raises(WebhookError) as exc:
-        match_labels_to_k8s(["random-label"])
+        match_labels_to_k8s(0, ["random-label"])
     assert "missing required platform label" in exc.value.message
 
 
@@ -126,7 +126,7 @@ def test_webhook_queued_stores_job(mock_store, mock_connect):
     payload = {
         "action": "queued",
         "workflow_job": {"id": 12345, "name": "test", "labels": ["ubuntu-24.04-riscv"], "html_url": "https://github.com/riseproject-dev/sample/actions/runs/1/job/12345"},
-        "repository": {"id": 100, "full_name": "riseproject-dev/sample", "owner": {"id": list(ALLOWED_ORGS)[0], "login": "riseproject-dev"}},
+        "repository": {"id": 100, "full_name": "riseproject-dev/sample", "owner": {"id": 152654596, "login": "riseproject-dev"}},
         "installation": {"id": 999},
     }
     body = json.dumps(payload)
@@ -143,13 +143,13 @@ def test_webhook_queued_stores_job(mock_store, mock_connect):
         assert b"stored" in resp.data
         mock_store.assert_called_once_with(
             job_id=12345,
-            org_id=list(ALLOWED_ORGS)[0],
+            org_id=152654596,
             org_name="riseproject-dev",
             repo_full_name="riseproject-dev/sample",
             installation_id=999,
             labels=["ubuntu-24.04-riscv"],
             k8s_pool="scw-em-rv1",
-            k8s_image="cloudv10x/github-actions-riscv:docker-ubuntu-2.331.0",
+            k8s_image="rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0",
             html_url="https://github.com/riseproject-dev/sample/actions/runs/1/job/12345",
         )
 
@@ -163,7 +163,7 @@ def test_webhook_in_progress(mock_update, mock_connect):
     payload = {
         "action": "in_progress",
         "workflow_job": {"id": 12345, "name": "test", "labels": ["ubuntu-24.04-riscv"]},
-        "repository": {"full_name": "riseproject-dev/sample", "owner": {"id": list(ALLOWED_ORGS)[0], "login": "riseproject-dev"}},
+        "repository": {"full_name": "riseproject-dev/sample", "owner": {"id": 152654596, "login": "riseproject-dev"}},
     }
     body = json.dumps(payload)
     sig = "sha256=" + compute_signature(body, GHAPP_WEBHOOK_SECRET).hexdigest()
@@ -189,7 +189,7 @@ def test_webhook_completed(mock_complete, mock_connect):
     payload = {
         "action": "completed",
         "workflow_job": {"id": 12345, "name": "test", "labels": ["ubuntu-24.04-riscv"]},
-        "repository": {"full_name": "riseproject-dev/sample", "owner": {"id": list(ALLOWED_ORGS)[0], "login": "riseproject-dev"}},
+        "repository": {"full_name": "riseproject-dev/sample", "owner": {"id": 152654596, "login": "riseproject-dev"}},
     }
     body = json.dumps(payload)
     sig = "sha256=" + compute_signature(body, GHAPP_WEBHOOK_SECRET).hexdigest()

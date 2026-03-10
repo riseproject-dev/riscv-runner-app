@@ -143,7 +143,7 @@ def authorize_organization(payload):
     return org_id
 
 
-def match_labels_to_k8s(job_labels):
+def match_labels_to_k8s(org_id, job_labels):
     """
     Map workflow job labels to a k8s pool name and container image.
 
@@ -151,9 +151,16 @@ def match_labels_to_k8s(job_labels):
     used as Redis pool key and pod label.
     """
     if job_labels == ["ubuntu-24.04-riscv"]:
-        return "scw-em-rv1", "cloudv10x/github-actions-riscv:docker-ubuntu-2.331.0"
+        return "scw-em-rv1", "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0"
     elif job_labels == ["ubuntu-24.04-riscv-rvv"]:
-        return "cloudv10x-rvv", "cloudv10x/github-actions-riscv:docker-ubuntu-2.331.0"
+        return "cloudv10x-rvv", "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0"
+    elif job_labels == ["ubuntu-26.04-riscv"]:
+        return "scw-em-rv1", "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-26.04-2.331.0"
+    elif job_labels == ["ubuntu-26.04-riscv-rvv"]:
+        return "cloudv10x-rvv", "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-26.04-2.331.0"
+    # Special case(s) for PyTorch org
+    elif org_id == PYTORCH_ORG_ID and job_labels == ["linux.riscv64"]:
+        return "scw-em-rv1", "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0"
     else:
         raise WebhookError(200, f"Ignoring job: missing required platform label (got {job_labels})")
 
@@ -204,8 +211,12 @@ def webhook():
     # labels may be missing when no labels are defined
     job_labels = payload["workflow_job"]["labels"] or []
 
+    org_id = payload["repository"]["owner"]["id"]
+    if not org_id:
+        raise WebhookError(400, "Organization ID is missing in payload")
+
     # Make sure the required labels are present; Filters out unsupported jobs early
-    k8s_pool, k8s_image = match_labels_to_k8s(job_labels)
+    k8s_pool, k8s_image = match_labels_to_k8s(org_id, job_labels)
 
     logger.info("Received %s workflow_job id=%s name=%s repo=%s labels=%s",
                 action, job_id, payload["workflow_job"]["name"],
@@ -216,10 +227,6 @@ def webhook():
         installation_id = payload["installation"]["id"]
         if not installation_id:
             raise WebhookError(400, "Installation ID is missing in payload")
-
-        org_id = payload["repository"]["owner"]["id"]
-        if not org_id:
-            raise WebhookError(400, "Organization ID is missing in payload")
 
         org_name = payload["repository"]["owner"]["login"]
         if not org_name:
