@@ -40,6 +40,7 @@ def provision_runner(jit_config, runner_name, k8s_image, k8s_pool, org_id):
                 "nodeSelector": node_selector,
                 # 24h queue limit + 5d execution limit + 2h buffer = 525600s
                 "activeDeadlineSeconds": 525600,
+                "restartPolicy": "Never",
                 "containers": [
                     {
                         "name": "runner",
@@ -51,7 +52,16 @@ def provision_runner(jit_config, runner_name, k8s_image, k8s_pool, org_id):
                         "env": [
                             {"name": "GITHUB_ACTIONS_RUNNER_TRACE", "value": "1"},
                             {"name": "DOCKER_HOST", "value": "tcp://localhost:2376"},
-                            {"name": "DOCKER_TLS_VERIFY", "value": "0"},
+                            {"name": "DOCKER_TLS_CERTDIR", "value": "/docker-certs"},
+                            {"name": "DOCKER_TLS_VERIFY", "value": "1"},
+                            {"name": "DOCKER_CERT_PATH", "value": "/docker-certs/client"},
+                        ],
+                        "volumeMounts": [
+                            {
+                                "name": "docker-certs",
+                                "mountPath": "/docker-certs",
+                                "readOnly": True,
+                            },
                         ],
                         "resources": {
                             "limits": {
@@ -59,17 +69,39 @@ def provision_runner(jit_config, runner_name, k8s_image, k8s_pool, org_id):
                             }
                         }
                     },
+                ],
+                "initContainers": [
                     {
-                        # Docker-in-Docker sidecar for sibling container to run DinD-enabled jobs
+                        # Docker-in-Docker sidecar for runner container to run DinD-enabled jobs
                         "name": "dind",
                         "image": RUNNER_IMAGE_DIND,
+                        "restartPolicy": "Always", # makes it a "sidecar"
                         "securityContext": {"privileged": True},
                         "env": [
-                            {"name": "DOCKER_TLS_CERTDIR", "value": ""}, # disables TLS generation entirely
+                            {"name": "DOCKER_TLS_CERTDIR", "value": "/docker-certs"},
+                        ],
+                        "volumeMounts": [
+                            {
+                                "name": "docker-certs",
+                                "mountPath": "/docker-certs",
+                            },
+                            {
+                                "name": "docker-storage",
+                                "mountPath": "/var/lib/docker",
+                            },
                         ],
                     },
                 ],
-                "restartPolicy": "Never"
+                "volumes": [
+                    {
+                        "name": "docker-certs",
+                        "emptyDir": {},
+                    },
+                    {
+                        "name": "docker-storage",
+                        "emptyDir": {},
+                    },
+                ],
             }
         }
 

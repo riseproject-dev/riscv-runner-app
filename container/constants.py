@@ -42,5 +42,5 @@ STAGING_ORGS = {oid for oid, c in ORG_CONFIG.items() if c.get("staging")}
 
 RUNNER_IMAGE_UBUNTU_24_04 = "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0@sha256:45e28749c52470b7fb6a788f1b588f770ddb6e7c19b40805d8de3a88ae7ab7b0"
 RUNNER_IMAGE_UBUNTU_26_04 = "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-26.04-2.331.0@sha256:9b2d6b7e7189defd8c14780af8bfefc26d2663e587c385b92a274d8bfdefb59c"
-RUNNER_IMAGE_DIND = "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:dind@sha256:44b63facc1abbcc78d0e2c301bb90022bf550a03c5b64d0235f4f276e73a65e2"
+RUNNER_IMAGE_DIND = "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:dind@sha256:db814a8294fe60df1200b9d272309cda597794e800b790edd21c5143dceaa869"
 
