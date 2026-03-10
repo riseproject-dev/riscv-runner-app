@@ -21,9 +21,9 @@ mock_constants.RUNNER_IMAGE_UBUNTU_24_04 = "rg.fr-par.scw.cloud/funcscwriseriscv
 mock_constants.RUNNER_IMAGE_UBUNTU_26_04 = "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-26.04-2.331.0@sha256:9b2d6b7e7189defd8c14780af8bfefc26d2663e587c385b92a274d8bfdefb59c"
 mock_constants.RUNNER_IMAGE_DIND = "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:dind@sha256:44b63facc1abbcc78d0e2c301bb90022bf550a03c5b64d0235f4f276e73a65e2"
 mock_constants.ORG_CONFIG = {
-    152654596: {"name": "riseproject-dev", "max_workers": None, "pre_allocated": 0, "staging": True},
-    21003710: {"name": "pytorch", "max_workers": 20, "pre_allocated": 0, "staging": False},
-    134263123: {"name": "ggml-org", "max_workers": 20, "pre_allocated": 0, "staging": False},
+    152654596: {"max_workers": None, "pre_allocated": 0, "staging": True},
+    21003710: {"max_workers": 20, "pre_allocated": 0, "staging": False},
+    134263123: {"max_workers": 20, "pre_allocated": 0, "staging": False},
 }
 mock_constants.ALLOWED_ORGS = set(mock_constants.ORG_CONFIG.keys())
 mock_constants.STAGING_ORGS = {oid for oid, c in mock_constants.ORG_CONFIG.items() if c.get("staging")}

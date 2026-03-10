@@ -21,19 +21,16 @@ GGML_ORG_ORG_ID = 134263123 # github.com/ggml-org (for llama.cpp)
 
 ORG_CONFIG = {
     RISEPROJECT_DEV_ORG_ID: {
-        "name": "riseproject-dev",
         "max_workers": None,
         "pre_allocated": 0,
         "staging": True,
     },
     PYTORCH_ORG_ID: {
-        "name": "pytorch",
         "max_workers": 20,
         "pre_allocated": 0,
         "staging": False,
     },
     GGML_ORG_ORG_ID: {
-        "name": "ggml-org",
         "max_workers": 20,
         "pre_allocated": 0,
         "staging": False,
