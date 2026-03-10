@@ -94,13 +94,13 @@ def test_unauthorized_user():
 def test_match_labels_riscv():
     k8s_pool, k8s_image = match_labels_to_k8s(0, ["ubuntu-24.04-riscv"])
     assert k8s_pool == "scw-em-rv1"
-    assert k8s_image == "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0"
+    assert k8s_image == "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0@sha256:45e28749c52470b7fb6a788f1b588f770ddb6e7c19b40805d8de3a88ae7ab7b0"
 
 
 def test_match_labels_rvv():
     k8s_pool, k8s_image = match_labels_to_k8s(0, ["ubuntu-24.04-riscv-rvv"])
     assert k8s_pool == "cloudv10x-rvv"
-    assert k8s_image == "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0"
+    assert k8s_image == "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0@sha256:45e28749c52470b7fb6a788f1b588f770ddb6e7c19b40805d8de3a88ae7ab7b0"
 
 
 def test_match_labels_unsupported():
@@ -149,7 +149,7 @@ def test_webhook_queued_stores_job(mock_store, mock_connect):
             installation_id=999,
             labels=["ubuntu-24.04-riscv"],
             k8s_pool="scw-em-rv1",
-            k8s_image="rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0",
+            k8s_image="rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0@sha256:45e28749c52470b7fb6a788f1b588f770ddb6e7c19b40805d8de3a88ae7ab7b0",
             html_url="https://github.com/riseproject-dev/sample/actions/runs/1/job/12345",
         )
 

@@ -3,7 +3,7 @@ import logging
 import kubernetes as k8s
 import yaml
 
-from constants import K8S_KUBECONFIG, K8S_NAMESPACE
+from constants import *
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ def provision_runner(jit_config, runner_name, k8s_image, k8s_pool, org_id):
                     {
                         # Docker-in-Docker sidecar for sibling container to run DinD-enabled jobs
                         "name": "dind",
-                        "image": "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:dind",
+                        "image": RUNNER_IMAGE_DIND,
                         "securityContext": {"privileged": True},
                         "env": [
                             {"name": "DOCKER_TLS_CERTDIR", "value": ""}, # disables TLS generation entirely

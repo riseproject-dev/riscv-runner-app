@@ -151,16 +151,16 @@ def match_labels_to_k8s(org_id, job_labels):
     used as Redis pool key and pod label.
     """
     if job_labels == ["ubuntu-24.04-riscv"]:
-        return "scw-em-rv1", "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0"
+        return "scw-em-rv1", RUNNER_IMAGE_UBUNTU_24_04
     elif job_labels == ["ubuntu-24.04-riscv-rvv"]:
-        return "cloudv10x-rvv", "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0"
+        return "cloudv10x-rvv", RUNNER_IMAGE_UBUNTU_24_04
     elif job_labels == ["ubuntu-26.04-riscv"]:
-        return "scw-em-rv1", "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-26.04-2.331.0"
+        return "scw-em-rv1", RUNNER_IMAGE_UBUNTU_26_04
     elif job_labels == ["ubuntu-26.04-riscv-rvv"]:
-        return "cloudv10x-rvv", "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-26.04-2.331.0"
+        return "cloudv10x-rvv", RUNNER_IMAGE_UBUNTU_26_04
     # Special case(s) for PyTorch org
     elif org_id == PYTORCH_ORG_ID and job_labels == ["linux.riscv64"]:
-        return "scw-em-rv1", "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0"
+        return "scw-em-rv1", RUNNER_IMAGE_UBUNTU_24_04
     else:
         raise WebhookError(200, f"Ignoring job: missing required platform label (got {job_labels})")
 
