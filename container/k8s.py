@@ -45,6 +45,7 @@ def provision_runner(jit_config, runner_name, k8s_image, k8s_pool, org_id):
                     {
                         "name": "runner",
                         "image": k8s_image,
+                        "imagePullPolicy": "Always",
                         "command": ["/bin/bash", "-eux", "-o", "pipefail", "-c"],
                         "args": [
                             f"./run.sh --jitconfig {jit_config}"
@@ -75,6 +76,7 @@ def provision_runner(jit_config, runner_name, k8s_image, k8s_pool, org_id):
                         # Docker-in-Docker sidecar for runner container to run DinD-enabled jobs
                         "name": "dind",
                         "image": RUNNER_IMAGE_DIND,
+                        "imagePullPolicy": "Always",
                         "restartPolicy": "Always", # makes it a "sidecar"
                         "securityContext": {"privileged": True},
                         "env": [
