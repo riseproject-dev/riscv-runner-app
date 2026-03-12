@@ -17,25 +17,33 @@ from handler import (
 # --- Signature verification ---
 
 def test_valid_signature():
+    from handler import app
     body = '{"action":"queued"}'
     expected_signature = compute_signature(body, GHAPP_WEBHOOK_SECRET).hexdigest()
-    headers = {"X-Hub-Signature-256": f"sha256={expected_signature}"}
+    headers = {"X-Hub-Signature-256": f"sha256={expected_signature}", "X-Github-Event": "workflow_job"}
 
-    result = check_webhook_signature(headers, body)
-    assert result == body
+    with app.test_request_context(headers=headers):
+        event, result_body = check_webhook_signature(headers, body)
+        assert event == "workflow_job"
+        assert result_body == body
 
 
 def test_invalid_signature():
-    headers = {"X-Hub-Signature-256": "sha256=invalid"}
-    with pytest.raises(WebhookError) as exc:
-        check_webhook_signature(headers, "")
-    assert exc.value.status_code == 401
+    from handler import app
+    headers = {"X-Hub-Signature-256": "sha256=invalid", "X-Github-Event": "workflow_job"}
+    with app.test_request_context(headers=headers):
+        with pytest.raises(WebhookError) as exc:
+            check_webhook_signature(headers, "")
+        assert exc.value.status_code == 401
 
 
 def test_missing_signature():
-    with pytest.raises(WebhookError) as exc:
-        check_webhook_signature({}, "")
-    assert exc.value.status_code == 401
+    from handler import app
+    headers = {"X-Github-Event": "workflow_job"}
+    with app.test_request_context(headers=headers):
+        with pytest.raises(WebhookError) as exc:
+            check_webhook_signature(headers, "")
+        assert exc.value.status_code == 400
 
 
 # --- Event parsing ---
@@ -94,13 +102,13 @@ def test_unauthorized_user():
 def test_match_labels_riscv():
     k8s_pool, k8s_image = match_labels_to_k8s(0, ["ubuntu-24.04-riscv"])
     assert k8s_pool == "scw-em-rv1"
-    assert k8s_image == "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0@sha256:45e28749c52470b7fb6a788f1b588f770ddb6e7c19b40805d8de3a88ae7ab7b0"
+    assert k8s_image == "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0"
 
 
 def test_match_labels_rvv():
     k8s_pool, k8s_image = match_labels_to_k8s(0, ["ubuntu-24.04-riscv-rvv"])
     assert k8s_pool == "cloudv10x-rvv"
-    assert k8s_image == "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0@sha256:45e28749c52470b7fb6a788f1b588f770ddb6e7c19b40805d8de3a88ae7ab7b0"
+    assert k8s_image == "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0"
 
 
 def test_match_labels_unsupported():
@@ -137,6 +145,7 @@ def test_webhook_queued_stores_job(mock_store, mock_connect):
     with app.test_client() as client:
         resp = client.post("/", data=body, headers={
             "X-Hub-Signature-256": sig,
+            "X-Github-Event": "workflow_job",
             "Content-Type": "application/json",
         })
         assert resp.status_code == 200
@@ -149,7 +158,7 @@ def test_webhook_queued_stores_job(mock_store, mock_connect):
             installation_id=999,
             labels=["ubuntu-24.04-riscv"],
             k8s_pool="scw-em-rv1",
-            k8s_image="rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0@sha256:45e28749c52470b7fb6a788f1b588f770ddb6e7c19b40805d8de3a88ae7ab7b0",
+            k8s_image="rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0",
             html_url="https://github.com/riseproject-dev/sample/actions/runs/1/job/12345",
         )
 
@@ -173,6 +182,7 @@ def test_webhook_in_progress(mock_update, mock_connect):
     with app.test_client() as client:
         resp = client.post("/", data=body, headers={
             "X-Hub-Signature-256": sig,
+            "X-Github-Event": "workflow_job",
             "Content-Type": "application/json",
         })
         assert resp.status_code == 200
@@ -199,6 +209,7 @@ def test_webhook_completed(mock_complete, mock_connect):
     with app.test_client() as client:
         resp = client.post("/", data=body, headers={
             "X-Hub-Signature-256": sig,
+            "X-Github-Event": "workflow_job",
             "Content-Type": "application/json",
         })
         assert resp.status_code == 200

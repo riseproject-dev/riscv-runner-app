@@ -102,14 +102,20 @@ def verify_signature(body, signature, secret):
 
 def check_webhook_signature(headers, body):
     """Verify the webhook signature."""
-    signature = headers.get("X-Hub-Signature-256")
-    is_valid, message = verify_signature(body, signature, GHAPP_WEBHOOK_SECRET)
+    if not "X-Github-Event" in request.headers:
+        raise WebhookError(400, "Missing X-Github-Event header")
+    event = headers["X-Github-Event"]
 
+    if not "X-Hub-Signature-256" in request.headers:
+        raise WebhookError(400, "Missing X-Hub-Signature-256 header")
+    signature = headers["X-Hub-Signature-256"]
+
+    is_valid, message = verify_signature(body, signature, GHAPP_WEBHOOK_SECRET)
     if not is_valid:
         logger.warning("Webhook signature verification failed: %s", message)
         raise WebhookError(401, message)
 
-    return body
+    return event, body
 
 
 def check_webhook_event(body):
@@ -199,78 +205,86 @@ def usage():
 
 @app.route("/", methods=['POST'])
 def webhook():
-    body = check_webhook_signature(request.headers, request.get_data(as_text=True))
-    payload, action = check_webhook_event(body)
+    event, body = check_webhook_signature(request.headers, request.get_data(as_text=True))
 
-    authorize_organization(payload)
+    if event == "ping":
+        return f"pong"
 
-    job_id = payload["workflow_job"]["id"]
-    if not job_id:
-        raise WebhookError(400, "Job ID is missing in payload")
+    elif event == "workflow_job":
+        payload, action = check_webhook_event(body)
 
-    # labels may be missing when no labels are defined
-    job_labels = payload["workflow_job"]["labels"] or []
+        authorize_organization(payload)
 
-    org_id = payload["repository"]["owner"]["id"]
-    if not org_id:
-        raise WebhookError(400, "Organization ID is missing in payload")
+        job_id = payload["workflow_job"]["id"]
+        if not job_id:
+            raise WebhookError(400, "Job ID is missing in payload")
 
-    # Make sure the required labels are present; Filters out unsupported jobs early
-    k8s_pool, k8s_image = match_labels_to_k8s(org_id, job_labels)
+        # labels may be missing when no labels are defined
+        job_labels = payload["workflow_job"]["labels"] or []
 
-    logger.info("Received %s workflow_job id=%s name=%s repo=%s labels=%s",
-                action, job_id, payload["workflow_job"]["name"],
-                payload["repository"]["full_name"],
-                payload["workflow_job"]["labels"])
+        org_id = payload["repository"]["owner"]["id"]
+        if not org_id:
+            raise WebhookError(400, "Organization ID is missing in payload")
 
-    if action == "queued":
-        installation_id = payload["installation"]["id"]
-        if not installation_id:
-            raise WebhookError(400, "Installation ID is missing in payload")
+        # Make sure the required labels are present; Filters out unsupported jobs early
+        k8s_pool, k8s_image = match_labels_to_k8s(org_id, job_labels)
 
-        org_name = payload["repository"]["owner"]["login"]
-        if not org_name:
-            raise WebhookError(400, "Organization name is missing in payload")
+        logger.info("Received %s workflow_job id=%s name=%s repo=%s labels=%s",
+                    action, job_id, payload["workflow_job"]["name"],
+                    payload["repository"]["full_name"],
+                    payload["workflow_job"]["labels"])
 
-        repo_full_name = payload["repository"]["full_name"]
-        if not repo_full_name:
-            raise WebhookError(400, "Repository full name is missing in payload")
+        if action == "queued":
+            installation_id = payload["installation"]["id"]
+            if not installation_id:
+                raise WebhookError(400, "Installation ID is missing in payload")
 
-        html_url = payload["workflow_job"]["html_url"]
-        if not html_url:
-            raise WebhookError(400, "HTML URL is missing in payload")
+            org_name = payload["repository"]["owner"]["login"]
+            if not org_name:
+                raise WebhookError(400, "Organization name is missing in payload")
 
-        stored = db.store_job(
-            job_id=job_id,
-            org_id=org_id,
-            org_name=org_name,
-            repo_full_name=repo_full_name,
-            installation_id=installation_id,
-            labels=job_labels,
-            k8s_pool=k8s_pool,
-            k8s_image=k8s_image,
-            html_url=html_url,
-        )
+            repo_full_name = payload["repository"]["full_name"]
+            if not repo_full_name:
+                raise WebhookError(400, "Repository full name is missing in payload")
 
-        if stored:
-            return f"Job {job_id} stored."
+            html_url = payload["workflow_job"]["html_url"]
+            if not html_url:
+                raise WebhookError(400, "HTML URL is missing in payload")
+
+            stored = db.store_job(
+                job_id=job_id,
+                org_id=org_id,
+                org_name=org_name,
+                repo_full_name=repo_full_name,
+                installation_id=installation_id,
+                labels=job_labels,
+                k8s_pool=k8s_pool,
+                k8s_image=k8s_image,
+                html_url=html_url,
+            )
+
+            if stored:
+                return f"Job {job_id} stored."
+            else:
+                return f"Job {job_id} already exists."
+
+        elif action == "in_progress":
+            prev_status = db.update_job_running(job_id)
+            if prev_status is None:
+                logger.warning("Job %s not found in Redis on in_progress event", job_id)
+                return f"Job {job_id} not found."
+            logger.info("Job %s marked running (was %s)", job_id, prev_status)
+            return f"Job {job_id} marked running (was {prev_status})."
+
+        elif action == "completed":
+            prev_status = db.complete_job(job_id)
+            if prev_status is None:
+                logger.warning("Job %s not found in Redis on completed event", job_id)
+                return f"Job {job_id} not found."
+            return f"Job {job_id} completed (was {prev_status})."
+
         else:
-            return f"Job {job_id} already exists."
-
-    elif action == "in_progress":
-        prev_status = db.update_job_running(job_id)
-        if prev_status is None:
-            logger.warning("Job %s not found in Redis on in_progress event", job_id)
-            return f"Job {job_id} not found."
-        logger.info("Job %s marked running (was %s)", job_id, prev_status)
-        return f"Job {job_id} marked running (was {prev_status})."
-
-    elif action == "completed":
-        prev_status = db.complete_job(job_id)
-        if prev_status is None:
-            logger.warning("Job %s not found in Redis on completed event", job_id)
-            return f"Job {job_id} not found."
-        return f"Job {job_id} completed (was {prev_status})."
+            return f"Ignoring {action} job"
 
     else:
-        return f"Ignoring {action} job"
+        return f"Ignoring {event} event"
