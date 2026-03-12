@@ -58,6 +58,10 @@ def proxy_to_staging():
     if request.method != "POST" or request.path != "/":
         return
 
+    if request.headers.get("X-Github-Event") != "workflow_job":
+        # only redirect workflow_job events
+        return
+
     body = request.get_data(as_text=True)
     try:
         payload = json.loads(body)
