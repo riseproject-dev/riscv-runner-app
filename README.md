@@ -29,10 +29,11 @@ Available platform labels:
 | Labels | Board | Description |
 |--------|-------|-------------|
 | `ubuntu-24.04-riscv` | `scw-em-rv1` | Scaleway EM-RV1 RISC-V |
-| `ubuntu-24.04-riscv-rvv` | `cloudv10x-rvv` | CloudV10x RVV |
+| `ubuntu-24.04-riscv-2xlarge` | `cloudv10x-pioneer` | Cloud-V-provided hardware with larger number of cores (MILK-V Pioneer) |
+| `ubuntu-24.04-riscv-rvv` | `cloudv10x-rvv` | Cloud-V-provided hardware with RVV support |
 | `ubuntu-26.04-riscv` | `scw-em-rv1` | Scaleway EM-RV1 RISC-V (Ubuntu 26.04) |
-| `ubuntu-26.04-riscv-rvv` | `cloudv10x-rvv` | CloudV10x RVV (Ubuntu 26.04) |
-| `linux.riscv64` | `scw-em-rv1` | PyTorch org only |
+| `ubuntu-26.04-riscv-2xlarge` | `cloudv10x-pioneer` | Cloud-V-provided hardware with larger number of cores (MILK-V Pioneer) (Ubuntu 26.04) |
+| `ubuntu-26.04-riscv-rvv` | `cloudv10x-rvv` | Cloud-V-provided hardware with RVV support (Ubuntu 26.04) |
 
 ### Requirements
 
