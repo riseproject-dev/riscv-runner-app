@@ -187,7 +187,7 @@ def test_gh_reconcile_completes_job(mock_status, mock_auth, mock_db):
 
     gh_reconcile()
 
-    mock_db.complete_job.assert_called_once_with("111")
+    mock_db.update_job_completed.assert_called_once_with("111")
 
 
 @patch("worker.db")
@@ -210,5 +210,5 @@ def test_gh_reconcile_no_active_jobs(mock_db):
 
     gh_reconcile()
 
-    mock_db.complete_job.assert_not_called()
+    mock_db.update_job_completed.assert_not_called()
     mock_db.update_job_running.assert_not_called()

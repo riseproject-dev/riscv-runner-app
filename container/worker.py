@@ -60,7 +60,7 @@ def gh_reconcile():
             redis_status = job.get("status")
             if gh_status == "completed" and redis_status != "completed":
                 logger.info("GH reconcile: job %s is completed on GitHub (was %s in Redis)", job_id, redis_status)
-                db.complete_job(job_id)
+                db.update_job_completed(job_id)
             elif gh_status == "in_progress" and redis_status == "pending":
                 logger.info("GH reconcile: job %s is in_progress on GitHub (was pending in Redis)", job_id)
                 db.update_job_running(job_id)
