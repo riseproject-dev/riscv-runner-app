@@ -191,7 +191,7 @@ def test_webhook_in_progress(mock_update, mock_connect):
 
 
 @patch("db._init_client")
-@patch("db.complete_job", return_value="running")
+@patch("db.update_job_completed", return_value="running")
 def test_webhook_completed(mock_complete, mock_connect):
     """Test that a completed webhook marks the job as completed."""
     from handler import app

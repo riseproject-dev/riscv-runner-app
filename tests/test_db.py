@@ -3,7 +3,7 @@ from unittest.mock import patch, MagicMock, call
 from db import (
     store_job,
     update_job_running,
-    complete_job,
+    update_job_completed,
     get_pool_demand,
     get_pending_jobs,
     add_worker,
@@ -73,7 +73,7 @@ def test_update_job_running_not_found(mock_init):
     assert prev is None
 
 
-# --- complete_job ---
+# --- update_job_completed ---
 
 @patch("db._init_client")
 def test_complete_job(mock_init):
@@ -81,7 +81,7 @@ def test_complete_job(mock_init):
     mock_init.return_value = r
     r.hgetall.return_value = {"status": "running", "org_id": "1000", "k8s_pool": "scw-em-rv1"}
 
-    prev = complete_job(111)
+    prev = update_job_completed(111)
 
     assert prev == "running"
     pipe.hset.assert_called_once()
@@ -95,7 +95,7 @@ def test_complete_job_not_found(mock_init):
     mock_init.return_value = r
     r.hgetall.return_value = {}
 
-    prev = complete_job(111)
+    prev = update_job_completed(111)
 
     assert prev is None
 

@@ -85,8 +85,8 @@ def update_job_running(job_id):
     return prev_status
 
 
-def complete_job(job_id):
-    """Complete a job: remove from pool sets. Returns previous status or None."""
+def update_job_completed(job_id):
+    """Update job status to completed, and remove from {env}:pool:{org}:{pool}:jobs set. Returns previous status or None."""
     r = _init_client()
     key = _job_key(job_id)
     data = r.hgetall(key)

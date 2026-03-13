@@ -116,7 +116,7 @@ Handler -> GitHub: 200 OK
 
 ```
 GitHub -> Handler: workflow_job (action=completed)
-Handler -> Redis: complete_job(job_id)
+Handler -> Redis: update_job_completed(job_id)
   - SREM from pool:jobs
   - Update hash status=completed
 Handler -> GitHub: 200 OK
