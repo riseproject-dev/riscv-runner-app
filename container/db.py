@@ -178,7 +178,7 @@ def cleanup_job(job_id):
     logger.debug("Cleaned up job %s", job_id)
 
 
-def get_all_job_ids():
+def get_all_active_job_ids():
     """Return all job_ids across all pool:jobs sets."""
     r = _init_client()
     all_ids = set()
@@ -217,6 +217,17 @@ def get_pool_usage():
             workers = list(r.smembers(key))
             result[(org_id, k8s_pool)] = {"org_name": org_id, "jobs": [], "workers": workers}
     return result
+
+
+def get_all_jobs():
+    """Return all job hashes as a list of dicts, including completed jobs."""
+    r = _init_client()
+    jobs = []
+    for key in r.scan_iter(match=f"{ENV_PREFIX}:job:*"):
+        data = r.hgetall(key)
+        if data:
+            jobs.append(data)
+    return jobs
 
 
 def iter_completed_jobs():

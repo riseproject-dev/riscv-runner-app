@@ -25,21 +25,18 @@ def gh_reconcile():
     completed but Redis disagrees, mark it completed. If GitHub says in_progress
     but Redis says pending, update to running.
     """
-    active_job_ids = db.get_all_job_ids()
-    if not active_job_ids:
+    jobs = db.get_all_jobs()
+    if not jobs:
         return
 
     # Group jobs by installation_id to minimize auth calls
     jobs_by_installation = {}
-    for job_id in active_job_ids:
-        job = db.get_job(job_id)
-        if not job:
-            continue
+    for job in jobs:
         if job.get("status") == "completed":
             continue
-        inst_id = job.get("installation_id")
-        if inst_id:
-            jobs_by_installation.setdefault(inst_id, []).append(job)
+        installation_id = job.get("installation_id")
+        if installation_id:
+            jobs_by_installation.setdefault(installation_id, []).append(job)
 
     for installation_id, jobs in jobs_by_installation.items():
         try:
@@ -195,15 +192,18 @@ def cleanup_pods():
 
 def cleanup_jobs():
     """Clean up old completed job hashes."""
-    active_job_ids = db.get_all_job_ids()
+    active_job_ids = db.get_all_active_job_ids()
     for job_id, data in db.iter_completed_jobs():
         if job_id and job_id not in active_job_ids:
-            created_at = float(data.get("created_at", 0))
-            if time.time() - created_at > 300:  # 5 minutes
-                logger.debug("Checking completed job %s for cleanup: job not active for more than 5 minutes", job_id)
+            created_at = data.get("created_at")
+            if not created_at:
+                logger.debug("Checking completed job %s for cleanup: missing created_at field, cleaning up", job_id)
+                db.cleanup_job(job_id)
+            elif time.time() - float(created_at) > 15 * (24 * 60 * 60):  # 15 days
+                logger.debug("Checking completed job %s for cleanup: job not active for more than 15 days, cleaning up", job_id)
                 db.cleanup_job(job_id)
             else:
-                logger.debug("Checking completed job %s for cleanup: job not active, but for less than 5 minutes", job_id)
+                logger.debug("Checking completed job %s for cleanup: job not active, but for less than 15 days", job_id)
         else:
             logger.debug("Checking completed job %s for cleanup: job still active, skipping", job_id)
 
