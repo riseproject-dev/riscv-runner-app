@@ -8,8 +8,6 @@ from db import (
     get_pending_jobs,
     add_worker,
     remove_worker,
-    get_job,
-    get_all_job_ids,
     ENV_PREFIX,
 )
 

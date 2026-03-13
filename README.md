@@ -68,7 +68,7 @@ Redis (demand + supply state)
 Background Worker (worker.py)
   |  - GH reconciliation: sync Redis with GitHub job status
   |  - Pod cleanup: delete Succeeded/Failed pods, remove from worker sets
-  |  - Job cleanup: remove completed job hashes older than 5 minutes
+  |  - Job cleanup: remove completed job hashes older than 15 days
   |  - Demand matching: provision runners where demand > supply
   |  - State logging: log per-pool job/worker counts
   |
@@ -194,6 +194,7 @@ Per-org configuration is defined in `ORG_CONFIG` in `constants.py`:
 | `/` | POST | Webhook endpoint for `workflow_job` events |
 | `/health` | GET | Health check (returns `ok`) |
 | `/usage` | GET | Human-readable view of per-pool jobs and workers |
+| `/history` | GET | Job history grouped by org/pool, sorted by creation time |
 
 ### Key files
 
@@ -285,7 +286,7 @@ kubectl create clusterrolebinding gh-app-node-reader --clusterrole=gh-app-node-r
 
 ### Cleanup terminated runner pods
 
-Runner pods are automatically cleaned up by the background worker when pods reach Succeeded/Failed phase. Stale completed job hashes are removed after 5 minutes.
+Runner pods are automatically cleaned up by the background worker when pods reach Succeeded/Failed phase. Stale completed job hashes are removed after 15 days.
 
 To manually clean up finished pods:
 
