@@ -63,6 +63,10 @@ def provision_runner(jit_config, runner_name, k8s_image, k8s_pool, org_id):
                                 "mountPath": "/docker-certs",
                                 "readOnly": True,
                             },
+                            {
+                                "name": "workspace",
+                                "mountPath": "/home/runner/_work",
+                            },
                         ],
                         "resources": {
                             "limits": {
@@ -91,6 +95,10 @@ def provision_runner(jit_config, runner_name, k8s_image, k8s_pool, org_id):
                                 "name": "docker-storage",
                                 "mountPath": "/var/lib/docker",
                             },
+                            {
+                                "name": "workspace",
+                                "mountPath": "/home/runner/_work",
+                            },
                         ],
                     },
                 ],
@@ -101,6 +109,10 @@ def provision_runner(jit_config, runner_name, k8s_image, k8s_pool, org_id):
                     },
                     {
                         "name": "docker-storage",
+                        "emptyDir": {},
+                    },
+                    {
+                        "name": "workspace",
                         "emptyDir": {},
                     },
                 ],
