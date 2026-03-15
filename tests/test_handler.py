@@ -109,6 +109,11 @@ def test_match_labels_rvv():
     k8s_pool, k8s_image = match_labels_to_k8s(0, ["ubuntu-24.04-riscv-rvv"])
     assert k8s_pool == "cloudv10x-rvv"
     assert k8s_image == "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0"
+    
+def test_match_labels_2xlarge():
+    k8s_pool, k8s_image = match_labels_to_k8s(0, ["ubuntu-24.04-riscv-2xlarge"])
+    assert k8s_pool == "cloudv10x-pioneer"
+    assert k8s_image == "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0"
 
 
 def test_match_labels_unsupported():
