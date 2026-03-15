@@ -168,6 +168,13 @@ def match_labels_to_k8s(org_id, job_labels):
         return "scw-em-rv1", RUNNER_IMAGE_UBUNTU_26_04
     elif job_labels == ["ubuntu-26.04-riscv-rvv"]:
         return "cloudv10x-rvv", RUNNER_IMAGE_UBUNTU_26_04
+    elif job_labels == ["ubuntu-24.04-riscv-2xlarge"]:
+        return "cloudv10x-pioneer", RUNNER_IMAGE_UBUNTU_24_04 # TODO: Later we will have to add other 
+                                                              # providers aside from cloud-v too and we 
+                                                              # need to think if we are going to restrict 2x 
+                                                              # large to Milk-V Pioneer box or there can be other 
+                                                              # RISC-V machines with, for example,  in the 
+                                                              # future under this label
     # Special case(s) for PyTorch org
     elif org_id == PYTORCH_ORG_ID and job_labels == ["linux.riscv64"]:
         return "scw-em-rv1", RUNNER_IMAGE_UBUNTU_24_04
