@@ -154,7 +154,7 @@ def authorize_organization(payload):
     return org_id
 
 
-def match_labels_to_k8s(org_id, job_labels):
+def match_labels_to_k8s(org_id, repo_full_name, job_labels):
     """
     Map workflow job labels to a k8s pool name and container image.
 
@@ -177,8 +177,11 @@ def match_labels_to_k8s(org_id, job_labels):
                                                               # RISC-V machines with, for example,  in the 
                                                               # future under this label
     # Special case(s) for PyTorch org
-    elif org_id == PYTORCH_ORG_ID and job_labels == ["linux.riscv64"]:
-        return "scw-em-rv1", RUNNER_IMAGE_UBUNTU_24_04
+    elif org_id == PYTORCH_ORG_ID or (org_id == RISEPROJECT_DEV_ORG_ID and repo_full_name.endswith("/pytorch")):
+        if len(job_labels) == 1 and "linux.riscv64.2xlarge.ephemeral" in job_labels[0]:
+            return "scw-em-rv1", RUNNER_IMAGE_UBUNTU_24_04
+        else:
+            raise WebhookError(200, f"Ignoring job: missing required platform label (got {job_labels}) for PyTorch org")
     else:
         raise WebhookError(200, f"Ignoring job: missing required platform label (got {job_labels})")
 
@@ -278,8 +281,12 @@ def webhook():
         if not org_id:
             raise WebhookError(400, "Organization ID is missing in payload")
 
+        repo_full_name = payload["repository"]["full_name"]
+        if not repo_full_name:
+            raise WebhookError(400, "Repository full name is missing in payload")
+
         # Make sure the required labels are present; Filters out unsupported jobs early
-        k8s_pool, k8s_image = match_labels_to_k8s(org_id, job_labels)
+        k8s_pool, k8s_image = match_labels_to_k8s(org_id, repo_full_name, job_labels)
 
         logger.info("Received %s workflow_job id=%s name=%s repo=%s labels=%s",
                     action, job_id, payload["workflow_job"]["name"],
@@ -294,10 +301,6 @@ def webhook():
             org_name = payload["repository"]["owner"]["login"]
             if not org_name:
                 raise WebhookError(400, "Organization name is missing in payload")
-
-            repo_full_name = payload["repository"]["full_name"]
-            if not repo_full_name:
-                raise WebhookError(400, "Repository full name is missing in payload")
 
             html_url = payload["workflow_job"]["html_url"]
             if not html_url:

@@ -100,31 +100,32 @@ def test_unauthorized_user():
 # --- Label matching ---
 
 def test_match_labels_riscv():
-    k8s_pool, k8s_image = match_labels_to_k8s(0, ["ubuntu-24.04-riscv"])
+    k8s_pool, k8s_image = match_labels_to_k8s(0, "", ["ubuntu-24.04-riscv"])
     assert k8s_pool == "scw-em-rv1"
     assert k8s_image == "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0"
 
 
 def test_match_labels_rvv():
-    k8s_pool, k8s_image = match_labels_to_k8s(0, ["ubuntu-24.04-riscv-rvv"])
+    k8s_pool, k8s_image = match_labels_to_k8s(0, "", ["ubuntu-24.04-riscv-rvv"])
     assert k8s_pool == "cloudv10x-rvv"
     assert k8s_image == "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0"
-    
+
+
 def test_match_labels_2xlarge():
-    k8s_pool, k8s_image = match_labels_to_k8s(0, ["ubuntu-24.04-riscv-2xlarge"])
+    k8s_pool, k8s_image = match_labels_to_k8s(0, "", ["ubuntu-24.04-riscv-2xlarge"])
     assert k8s_pool == "cloudv10x-pioneer"
     assert k8s_image == "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0"
 
 
 def test_match_labels_unsupported():
     with pytest.raises(WebhookError) as exc:
-        match_labels_to_k8s(0, ["unsupported-label"])
+        match_labels_to_k8s(0, "", ["unsupported-label"])
     assert "missing required platform label" in exc.value.message
 
 
 def test_match_labels_missing_platform():
     with pytest.raises(WebhookError) as exc:
-        match_labels_to_k8s(0, ["random-label"])
+        match_labels_to_k8s(0, "", ["random-label"])
     assert "missing required platform label" in exc.value.message
 
 
