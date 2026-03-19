@@ -10,7 +10,6 @@ from handler import (
     authorize_entity,
     compute_signature,
     match_labels_to_k8s,
-    ALLOWED_ORGS,
     GHAPP_WEBHOOK_SECRET,
 )
 
@@ -91,16 +90,15 @@ def test_authorized_org():
     assert entity_type == EntityType.ORGANIZATION
 
 
-def test_unauthorized_org():
+def test_any_org_accepted():
+    """Any org that installs the app is accepted."""
     payload = {"repository": {"owner": {"id": 1, "login": "unknown-org", "type": "Organization"}}}
-    with pytest.raises(WebhookError) as exc:
-        authorize_entity(payload)
-    assert exc.value.status_code == 200
-    assert "not authorized" in exc.value.message
+    entity_id, entity_type = authorize_entity(payload)
+    assert entity_id == 1
+    assert entity_type == EntityType.ORGANIZATION
 
 
 def test_personal_account_accepted():
-    """Personal accounts are accepted without allowlist check."""
     payload = {"repository": {"owner": {"id": 99999, "login": "some-user", "type": "User"}}}
     entity_id, entity_type = authorize_entity(payload)
     assert entity_id == 99999

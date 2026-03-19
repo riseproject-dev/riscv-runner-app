@@ -117,10 +117,7 @@ def demand_match():
             continue
 
         # Check max_workers cap
-        if entity_type == EntityType.ORGANIZATION:
-            entity_config = ORG_CONFIG.get(int(entity_id), {"max_workers": 20})
-        else:
-            entity_config = {"max_workers": 20}
+        entity_config = ENTITY_CONFIG.get(int(entity_id), {"max_workers": 20})
         max_workers = entity_config.get("max_workers")
         if max_workers is not None:
             if entity_id not in entity_worker_counts:

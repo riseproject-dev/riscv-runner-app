@@ -70,19 +70,19 @@ def proxy_to_staging():
     except (json.JSONDecodeError, TypeError):
         return
 
-    org_id = payload["repository"]["owner"]["id"]
-    if org_id not in STAGING_ORGS:
-        logger.debug("Received request for org %s, not in staging orgs, skipping proxy", org_id)
+    entity_id = payload["repository"]["owner"]["id"]
+    if entity_id not in STAGING_ENTITIES:
+        logger.debug("Received request for entity %s, not in staging entities, skipping proxy", entity_id)
         return
 
-    logger.debug("Proxying request for org %s to staging (%s)", org_id, STAGING_URL)
+    logger.debug("Proxying request for entity %s to staging (%s)", entity_id, STAGING_URL)
     resp = requests.post(
         STAGING_URL,
         data=request.get_data(),
         headers={k: v for k, v in request.headers if k.lower() != "host"},
         timeout=30,
     )
-    logger.info("Proxied request for org %s to staging, status=%s", org_id, resp.status_code)
+    logger.info("Proxied request for entity %s to staging, status=%s", entity_id, resp.status_code)
     return make_response(resp.content, resp.status_code)
 
 
@@ -154,13 +154,6 @@ def authorize_entity(payload):
         raise WebhookError(400, f"Unsupported owner type: {owner_type}")
 
     entity_type = EntityType(owner_type)
-    if entity_type == EntityType.ORGANIZATION:
-        if owner_id not in ALLOWED_ORGS:
-            logger.warning("Organization %s (%s) not authorized", owner["login"], owner_id)
-            raise WebhookError(200, f"Organization {owner_id} not authorized.")
-        logger.debug("Organization %s authorized", owner["login"])
-    else:
-        logger.debug("Personal account %s accepted", owner["login"])
 
     return owner_id, entity_type
 

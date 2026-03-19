@@ -22,11 +22,14 @@ REDIS_URL = os.environ["REDIS_URL"]
 
 RUNNER_GROUP_NAME = "RISE RISC-V Runners"
 
+# gh api orgs/<orgname> --jq '.id'
 RISEPROJECT_DEV_ORG_ID = 152654596 # github.com/riseproject-dev
 PYTORCH_ORG_ID = 21003710 # github.com/pytorch
 GGML_ORG_ORG_ID = 134263123 # github.com/ggml-org (for llama.cpp)
+# gh api users/<username> --jq '.id'
+LUHENRY_USER_ID = 660779 # github.com/luhenry
 
-ORG_CONFIG = {
+ENTITY_CONFIG = {
     RISEPROJECT_DEV_ORG_ID: {
         "max_workers": None,
         "pre_allocated": 0,
@@ -42,10 +45,14 @@ ORG_CONFIG = {
         "pre_allocated": 0,
         "staging": False,
     },
+    LUHENRY_USER_ID: {
+        "max_workers": None,
+        "pre_allocated": 0,
+        "staging": True,
+    },
 }
 
-ALLOWED_ORGS = set(ORG_CONFIG.keys())
-STAGING_ORGS = {oid for oid, c in ORG_CONFIG.items() if c.get("staging")}
+STAGING_ENTITIES = {oid for oid, c in ENTITY_CONFIG.items() if c.get("staging")}
 
 RUNNER_IMAGE_UBUNTU_24_04 = "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0"
 RUNNER_IMAGE_UBUNTU_26_04 = "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-26.04-2.331.0"

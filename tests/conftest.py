@@ -28,12 +28,11 @@ mock_constants.GGML_ORG_ORG_ID = 134263123
 mock_constants.RUNNER_IMAGE_UBUNTU_24_04 = "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0"
 mock_constants.RUNNER_IMAGE_UBUNTU_26_04 = "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-26.04-2.331.0"
 mock_constants.RUNNER_IMAGE_DIND = "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:dind"
-mock_constants.ORG_CONFIG = {
+mock_constants.ENTITY_CONFIG = {
     152654596: {"max_workers": None, "pre_allocated": 0, "staging": True},
     21003710: {"max_workers": 20, "pre_allocated": 0, "staging": False},
     134263123: {"max_workers": 20, "pre_allocated": 0, "staging": False},
 }
-mock_constants.ALLOWED_ORGS = set(mock_constants.ORG_CONFIG.keys())
-mock_constants.STAGING_ORGS = {oid for oid, c in mock_constants.ORG_CONFIG.items() if c.get("staging")}
+mock_constants.STAGING_ENTITIES = {oid for oid, c in mock_constants.ENTITY_CONFIG.items() if c.get("staging")}
 
 sys.modules["constants"] = mock_constants

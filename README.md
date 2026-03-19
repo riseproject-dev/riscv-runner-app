@@ -37,7 +37,7 @@ Available platform labels:
 
 ### Requirements
 
-- [Temporary] Your organization must be on the allowlist. Unauthorized organizations are silently ignored.
+- Install the GitHub App on your organization or personal account.
 - Runners are ephemeral -- each runner handles exactly one job and then terminates.
 
 ## Architecture
@@ -53,10 +53,10 @@ GitHub (workflow_job webhook)
   |
   v
 Webhook Handler (handler.py)
-  |  - Proxies webhooks to staging for staging orgs (prod only)
+  |  - Proxies webhooks to staging for staging entities (prod only)
   |  - Verifies webhook signature
-  |  - Validates labels, authorizes entity (org or personal account)
-  |  - Resolves (org_id, labels) -> (k8s_pool, k8s_image)
+  |  - Validates labels, determines entity type (org or personal)
+  |  - Resolves (entity_id, labels) -> (k8s_pool, k8s_image)
   |  - Writes job to Redis
   |  - Serves /usage (per-pool jobs and workers)
   |  - NO GitHub API calls, NO k8s calls
@@ -64,7 +64,7 @@ Webhook Handler (handler.py)
   v
 Redis (demand + supply state)
   |  - Job hashes: per-job metadata (pending state derived from status field)
-  |  - Pool sets: jobs (demand) and workers (supply) per (org, k8s_pool)
+  |  - Pool sets: jobs (demand) and workers (supply) per (entity, k8s_pool)
   |
   v
 Background Worker (worker.py)
@@ -82,7 +82,7 @@ Kubernetes (runner pods)
 
 ```
 GitHub -> Handler: workflow_job (action=queued)
-Handler: validate signature, labels, org
+Handler: validate signature, labels, entity type
 Handler: match_labels_to_k8s(labels) -> (k8s_pool, k8s_image)
 Handler -> Redis: store_job() -> job hash + pool:jobs
 Handler: notify queue_event (wake worker)
@@ -94,15 +94,16 @@ Handler -> GitHub: 200 OK
 ```
 Worker: get_pending_jobs() from pool job sets (filter status=pending, sort by created_at)
 Worker: for each pending job:
-  - get_pool_demand(org_id, k8s_pool) -> (jobs, workers)
+  - get_pool_demand(entity_id, k8s_pool) -> (jobs, workers)
   - if jobs <= workers: skip (demand met)
-  - if org total workers >= max_workers: skip
+  - if entity total workers >= max_workers: skip
   - has_available_slot(node_selector): skip if no capacity
-  - authenticate_app(installation_id) -> token
-  - ensure_runner_group(org, token) -> group_id
-  - create_jit_runner_config(token, group_id, labels, org, name) -> jit_config
-  - provision_runner(jit_config, name, image, pool, org_id) -> pod
-  - add_worker(org_id, k8s_pool, pod_name)
+  - authenticate_app(installation_id, entity_type) -> token
+  - [org] ensure_runner_group(entity_name, token) -> group_id
+  - [org] create_jit_runner_config_org(token, group_id, labels, entity_name, name) -> jit_config
+  - [personal] create_jit_runner_config_repo(token, labels, repo_full_name, name) -> jit_config
+  - provision_runner(jit_config, name, image, pool, entity_id) -> pod
+  - add_worker(entity_id, k8s_pool, pod_name)
 ```
 
 ### Sequence: In-progress webhook
@@ -128,7 +129,7 @@ Handler -> GitHub: 200 OK
 
 Cancellation is passive. When a job is cancelled on GitHub:
 1. The `completed` webhook fires and removes the job from pool:jobs
-2. If a worker was already provisioned, it picks up another job in the org or times out
+2. If a worker was already provisioned, it picks up another job or times out
 3. GH reconciliation detects stale jobs within ~15s and cleans them up
 
 ### Job lifecycle state machine
@@ -176,17 +177,16 @@ deficit = demand - supply
 
 The worker iterates pending jobs in FIFO order. For each job:
 1. If `demand <= supply` for its pool: skip (demand already met)
-2. If org's total workers across all pools >= `max_workers`: skip
+2. If entity's total workers across all pools >= `max_workers`: skip
 3. If no k8s node capacity for the pool's node selector: skip
 4. Otherwise: provision a new runner
 
 ### Configuration
 
-Per-org configuration is defined in `ORG_CONFIG` in `constants.py`:
+Per-entity configuration is defined in `ENTITY_CONFIG` in `constants.py`, keyed by entity ID (org ID or user ID):
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `name` | str | Organization name (for logging) |
 | `max_workers` | int or None | Maximum concurrent workers across all pools. None = unlimited |
 | `pre_allocated` | int | Reserved for future use |
 | `staging` | bool | If true, webhooks are proxied from prod to staging |
@@ -198,13 +198,13 @@ Per-org configuration is defined in `ORG_CONFIG` in `constants.py`:
 | `/` | POST | Webhook endpoint for `workflow_job` events |
 | `/health` | GET | Health check (returns `ok`) |
 | `/usage` | GET | Human-readable view of per-pool jobs and workers |
-| `/history` | GET | Job history grouped by org/pool, sorted by creation time |
+| `/history` | GET | Job history grouped by entity/pool, sorted by creation time |
 
 ### Key files
 
 | File | Purpose |
 |------|---------|
-| `container/constants.py` | Environment configuration, org config |
+| `container/constants.py` | Environment configuration, entity config |
 | `container/handler.py` | Flask webhook handler -- validates requests, writes to Redis |
 | `container/worker.py` | Background worker -- GH reconciliation, demand matching, cleanup |
 | `container/k8s.py` | Kubernetes pod provisioning, deletion, capacity checks |
