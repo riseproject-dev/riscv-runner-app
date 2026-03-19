@@ -8,6 +8,7 @@ import requests
 from flask import Flask, request, make_response
 
 import db
+import k8s
 from constants import *
 
 app = Flask(__name__)
@@ -210,6 +211,17 @@ def usage():
             lines.append(f"  Workers ({len(info['workers'])}):")
             for w in sorted(info["workers"]):
                 lines.append(f"    - {w}")
+                try:
+                    events = k8s.get_pod_events(w)
+                    if events:
+                        for ev in events:
+                            ts = ev.last_timestamp or ev.event_time or ev.metadata.creation_timestamp
+                            ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if ts else "unknown"
+                            lines.append(f"        {ts_str}  [{ev.type}]  {ev.reason}: {ev.message}")
+                    else:
+                        lines.append(f"      Events: (none)")
+                except Exception:
+                    lines.append(f"      Events: (error fetching)")
         else:
             lines.append("  Workers: none")
         lines.append("")

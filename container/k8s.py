@@ -168,6 +168,21 @@ def has_available_slot(node_selector):
         return available > 0
 
 
+def get_pod_events(pod_name):
+    """Get events for a specific pod, sorted by last timestamp."""
+    with _init_client() as client:
+        api = k8s.client.CoreV1Api(client)
+        events = api.list_namespaced_event(
+            namespace=K8S_NAMESPACE,
+            field_selector=f"involvedObject.name={pod_name}",
+        )
+        sorted_events = sorted(
+            events.items,
+            key=lambda e: e.last_timestamp or e.event_time or e.metadata.creation_timestamp,
+        )
+        return sorted_events
+
+
 def list_pods():
     """Get all runner pods."""
     with _init_client() as client:
