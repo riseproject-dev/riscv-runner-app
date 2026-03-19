@@ -1,15 +1,23 @@
 import sys
 import types
+from enum import Enum
+
+class EntityType(str, Enum):
+    ORGANIZATION = "Organization"
+    USER = "User"
 
 # Mock the constants module before any container module is imported.
 # This avoids requiring real env vars (PROD, PROD_URL, etc.) during tests.
 mock_constants = types.ModuleType("constants")
+mock_constants.EntityType = EntityType
 mock_constants.PROD = False
 mock_constants.PROD_URL = "https://prod.example.com"
 mock_constants.STAGING_URL = "https://staging.example.com"
 mock_constants.K8S_NAMESPACE = "staging"
-mock_constants.GHAPP_ID = 2167633
-mock_constants.GHAPP_PRIVATE_KEY = "test-key"
+mock_constants.GHAPP_ORG_ID = 2167633
+mock_constants.GHAPP_ORG_PRIVATE_KEY = "test-key"
+mock_constants.GHAPP_PERSONAL_ID = 3131217
+mock_constants.GHAPP_PERSONAL_PRIVATE_KEY = "test-key-personal"
 mock_constants.GHAPP_WEBHOOK_SECRET = "test-webhook-secret"
 mock_constants.REDIS_URL = "rediss://localhost:6379"
 mock_constants.RUNNER_GROUP_NAME = "RISE RISC-V Runners"

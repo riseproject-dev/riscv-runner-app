@@ -40,7 +40,8 @@ def gh_reconcile():
 
     for installation_id, jobs in jobs_by_installation.items():
         try:
-            token = gh.authenticate_app(int(installation_id))
+            entity_type = EntityType(jobs[0].get("entity_type", EntityType.ORGANIZATION))
+            token = gh.authenticate_app(int(installation_id), entity_type=entity_type)
         except gh.GitHubAPIError as e:
             logger.error("Failed to authenticate for installation %s: %s", installation_id, e)
             continue
@@ -84,7 +85,7 @@ def demand_match():
     logger.debug("Processing %d pending jobs: [%s]", len(pending_job_ids), ', '.join(pending_job_ids))
 
     # Cache per-org worker counts
-    org_worker_counts = {}
+    entity_worker_counts = {}
 
     for job_id in pending_job_ids:
         job = db.get_job(job_id)
@@ -95,33 +96,38 @@ def demand_match():
             logger.debug("Job %s status is %s, not pending, skipping", job_id, job.get("status"))
             continue
 
-        org_id = job.get("org_id")
         k8s_pool = job.get("k8s_pool")
         k8s_image = job.get("k8s_image")
         installation_id = job.get("installation_id")
-        org_name = job.get("org_name")
+        entity_name = job.get("entity_name") or job.get("org_name")  # migration fallback
         labels = json.loads(job.get("job_labels", "[]"))
+        entity_type = EntityType(job.get("entity_type", EntityType.ORGANIZATION))
+        entity_id = job.get("entity_id") or job.get("org_id")  # migration fallback
+        repo_full_name = job.get("repo_full_name")
 
-        if not all([org_id, k8s_pool, k8s_image, installation_id, org_name]):
+        if not all([k8s_pool, k8s_image, installation_id, entity_name, entity_id, repo_full_name]):
             logger.warning("Job %s missing required fields, skipping", job_id)
             continue
 
         # Check pool demand vs supply
-        job_count, worker_count = db.get_pool_demand(org_id, k8s_pool)
+        job_count, worker_count = db.get_pool_demand(entity_id, k8s_pool)
         if job_count <= worker_count:
             logger.debug("Job %s: pool %s:%s demand met (jobs=%d, workers=%d)",
-                        job_id, org_id, k8s_pool, job_count, worker_count)
+                        job_id, entity_id, k8s_pool, job_count, worker_count)
             continue
 
-        # Check org max_workers cap
-        org_config = ORG_CONFIG.get(int(org_id), {"max_workers": 20}) # Default max_workers=20 for unknown orgs
-        max_workers = org_config.get("max_workers")
+        # Check max_workers cap
+        if entity_type == EntityType.ORGANIZATION:
+            entity_config = ORG_CONFIG.get(int(entity_id), {"max_workers": 20})
+        else:
+            entity_config = {"max_workers": 20}
+        max_workers = entity_config.get("max_workers")
         if max_workers is not None:
-            if org_id not in org_worker_counts:
-                org_worker_counts[org_id] = db.get_total_workers_for_org(org_id)
-            if org_worker_counts[org_id] >= max_workers:
-                logger.debug("Job %s: org %s at max_workers (%d/%d)",
-                            job_id, org_name, org_worker_counts[org_id], max_workers)
+            if entity_id not in entity_worker_counts:
+                entity_worker_counts[entity_id] = db.get_total_workers_for_entity(entity_id)
+            if entity_worker_counts[entity_id] >= max_workers:
+                logger.debug("Job %s: entity %s at max_workers (%d/%d)",
+                            job_id, entity_name, entity_worker_counts[entity_id], max_workers)
                 continue
 
         # Check k8s capacity
@@ -131,25 +137,29 @@ def demand_match():
             continue
 
         suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=9))
-        runner_name = f"rise-riscv-runner%s-{org_id}-{suffix}" % ("" if PROD else "-staging")
+        runner_name = f"rise-riscv-runner%s-{entity_id}-{suffix}" % ("" if PROD else "-staging")
 
         # Provision
         try:
-            token = gh.authenticate_app(int(installation_id))
-            group_id = gh.ensure_runner_group(org_name, token, RUNNER_GROUP_NAME)
-            jit_config = gh.create_jit_runner_config(token, group_id, labels, org_name, runner_name)
+            token = gh.authenticate_app(int(installation_id), entity_type=entity_type)
 
-            k8s.provision_runner(jit_config, runner_name, k8s_image, k8s_pool, org_id)
+            if entity_type == EntityType.ORGANIZATION:
+                group_id = gh.ensure_runner_group(entity_name, token, RUNNER_GROUP_NAME)
+                jit_config = gh.create_jit_runner_config_org(token, group_id, labels, entity_name, runner_name)
+            else:
+                jit_config = gh.create_jit_runner_config_repo(token, labels, repo_full_name, runner_name)
 
-            db.add_worker(org_id, k8s_pool, runner_name)
+            k8s.provision_runner(jit_config, runner_name, k8s_image, k8s_pool, entity_id)
+
+            db.add_worker(entity_id, k8s_pool, runner_name)
 
             # Update local cache
-            org_worker_counts[org_id] = org_worker_counts.get(org_id, 0) + 1
+            entity_worker_counts[entity_id] = entity_worker_counts.get(entity_id, 0) + 1
 
-            logger.info("Provisioned runner %s for org=%s pool=%s", runner_name, org_name, k8s_pool)
+            logger.info("Provisioned runner %s for entity=%s pool=%s entity_type=%s", runner_name, entity_name, k8s_pool, entity_type.value)
 
         except Exception as e:
-            logger.error("Failed to provision runner %s for org=%s pool=%s", runner_name, org_name, k8s_pool)
+            logger.error("Failed to provision runner %s for entity=%s pool=%s", runner_name, entity_name, k8s_pool)
 
 
 def cleanup_pods():
@@ -173,7 +183,7 @@ def cleanup_pods():
 
         pod_name = pod.metadata.name
         pod_labels = pod.metadata.labels or {}
-        org_id = pod_labels.get("riseproject.com/org_id")
+        entity_id = pod_labels.get("riseproject.com/entity_id") or pod_labels.get("riseproject.com/org_id")  # migration fallback
         k8s_pool = pod_labels.get("riseproject.com/board")
 
         try:
@@ -182,13 +192,13 @@ def cleanup_pods():
             logger.error("Failed to delete pod %s: %s", pod_name, e)
             continue
 
-        if org_id and k8s_pool:
-            db.remove_worker(org_id, k8s_pool, pod_name)
+        if entity_id and k8s_pool:
+            db.remove_worker(entity_id, k8s_pool, pod_name)
 
-    for org_id, k8s_pool, pod_name in workers:
+    for entity_id, k8s_pool, pod_name in workers:
         if not any(p.metadata.name == pod_name for p in pods):
-            logger.warning("Worker %s in org %s pool %s has no corresponding pod, removing from DB", pod_name, org_id, k8s_pool)
-            db.remove_worker(org_id, k8s_pool, pod_name)
+            logger.warning("Worker %s in entity_id %s pool %s has no corresponding pod, removing from DB", pod_name, entity_id, k8s_pool)
+            db.remove_worker(entity_id, k8s_pool, pod_name)
 
 def cleanup_jobs():
     """Clean up old completed job hashes."""

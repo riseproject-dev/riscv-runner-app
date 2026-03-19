@@ -140,19 +140,29 @@ def check_webhook_event(body):
     return payload, action
 
 
-def authorize_organization(payload):
-    """Authorize the organization."""
-    org_id = payload["repository"]["owner"]["id"]
-    if not org_id:
-        raise WebhookError(400, "Organization ID is missing in payload")
+def authorize_entity(payload):
+    """Authorize the repository owner (organization or personal account)."""
+    owner = payload["repository"]["owner"]
+    owner_id = owner["id"]
+    if not owner_id:
+        raise WebhookError(400, "Owner ID is missing in payload")
 
-    if org_id not in ALLOWED_ORGS:
-        logger.warning("Organization %s (%s) not authorized",
-                     payload["repository"]["owner"]["login"], org_id)
-        raise WebhookError(200, f"Organization {org_id} not authorized.")
+    owner_type = owner["type"]
+    if not owner_type:
+        raise WebhookError(400, "Owner Type is missing in payload")
+    if owner_type not in (EntityType.ORGANIZATION, EntityType.USER):
+        raise WebhookError(400, f"Unsupported owner type: {owner_type}")
 
-    logger.debug("Organization %s authorized", payload["repository"]["owner"]["login"])
-    return org_id
+    entity_type = EntityType(owner_type)
+    if entity_type == EntityType.ORGANIZATION:
+        if owner_id not in ALLOWED_ORGS:
+            logger.warning("Organization %s (%s) not authorized", owner["login"], owner_id)
+            raise WebhookError(200, f"Organization {owner_id} not authorized.")
+        logger.debug("Organization %s authorized", owner["login"])
+    else:
+        logger.debug("Personal account %s accepted", owner["login"])
+
+    return owner_id, entity_type
 
 
 def match_labels_to_k8s(org_id, repo_full_name, job_labels):
@@ -199,7 +209,7 @@ def usage():
     pool_usage = db.get_pool_usage()
     lines = []
     for (_, k8s_pool), info in sorted(pool_usage.items()):
-        lines.append(f"=== {info['org_name']} / {k8s_pool} ===")
+        lines.append(f"=== {info['entity_name']} / {k8s_pool} ===")
         if info["jobs"]:
             lines.append(f"  Jobs ({len(info['jobs'])}):")
             status_sorted_key = {"pending": 0, "running": 1, "completed": 2}
@@ -237,16 +247,16 @@ def history():
     # Sort by created_at descending (newest first)
     jobs.sort(key=lambda j: float(j.get("created_at", 0)), reverse=True)
 
-    # Group by (org_name, k8s_pool)
+    # Group by (entity_name, k8s_pool)
     grouped = {}
     for job in jobs:
-        org_name = job.get("org_name", job.get("org_id", "unknown"))
+        entity_name = job.get("entity_name") or job.get("org_name") or job.get("entity_id", "unknown") # migration fallback
         k8s_pool = job.get("k8s_pool", "unknown")
-        grouped.setdefault((org_name, k8s_pool), []).append(job)
+        grouped.setdefault((entity_name, k8s_pool), []).append(job)
 
     lines = []
-    for (org_name, k8s_pool), pool_jobs in sorted(grouped.items()):
-        lines.append(f"=== {org_name} / {k8s_pool} ({len(pool_jobs)} jobs) ===")
+    for (entity_name, k8s_pool), pool_jobs in sorted(grouped.items()):
+        lines.append(f"=== {entity_name} / {k8s_pool} ({len(pool_jobs)} jobs) ===")
         status_style = {"pending": "#d97706", "running": "#2563eb", "completed": "#16a34a"}
         for job in pool_jobs:
             status = job.get("status", "unknown")
@@ -280,7 +290,7 @@ def webhook():
     elif event == "workflow_job":
         payload, action = check_webhook_event(body)
 
-        authorize_organization(payload)
+        owner_id, entity_type = authorize_entity(payload)
 
         job_id = payload["workflow_job"]["id"]
         if not job_id:
@@ -289,30 +299,34 @@ def webhook():
         # labels may be missing when no labels are defined
         job_labels = payload["workflow_job"]["labels"] or []
 
-        org_id = payload["repository"]["owner"]["id"]
-        if not org_id:
-            raise WebhookError(400, "Organization ID is missing in payload")
-
         repo_full_name = payload["repository"]["full_name"]
         if not repo_full_name:
             raise WebhookError(400, "Repository full name is missing in payload")
 
-        # Make sure the required labels are present; Filters out unsupported jobs early
-        k8s_pool, k8s_image = match_labels_to_k8s(org_id, repo_full_name, job_labels)
+        repo_id = payload["repository"]["id"]
+        if not repo_id:
+            raise WebhookError(400, "Repository ID is missing in payload")
 
-        logger.info("Received %s workflow_job id=%s name=%s repo=%s labels=%s",
+        # entity_id: owner_id (org) for organizations, repo_id for personal accounts
+        entity_id = owner_id if entity_type == EntityType.ORGANIZATION else repo_id
+
+        # Make sure the required labels are present; Filters out unsupported jobs early
+        k8s_pool, k8s_image = match_labels_to_k8s(owner_id, repo_full_name, job_labels)
+
+        logger.info("Received %s workflow_job id=%s name=%s repo=%s labels=%s entity_type=%s",
                     action, job_id, payload["workflow_job"]["name"],
                     payload["repository"]["full_name"],
-                    payload["workflow_job"]["labels"])
+                    payload["workflow_job"]["labels"],
+                    entity_type.value)
 
         if action == "queued":
             installation_id = payload["installation"]["id"]
             if not installation_id:
                 raise WebhookError(400, "Installation ID is missing in payload")
 
-            org_name = payload["repository"]["owner"]["login"]
-            if not org_name:
-                raise WebhookError(400, "Organization name is missing in payload")
+            entity_name = payload["repository"]["owner"]["login"]
+            if not entity_name:
+                raise WebhookError(400, "Entity name is missing in payload")
 
             html_url = payload["workflow_job"]["html_url"]
             if not html_url:
@@ -320,8 +334,9 @@ def webhook():
 
             stored = db.store_job(
                 job_id=job_id,
-                org_id=org_id,
-                org_name=org_name,
+                entity_id=entity_id,
+                entity_name=entity_name,
+                entity_type=entity_type,
                 repo_full_name=repo_full_name,
                 installation_id=installation_id,
                 labels=job_labels,

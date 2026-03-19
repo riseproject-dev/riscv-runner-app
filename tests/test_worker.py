@@ -1,6 +1,7 @@
 import json
 from unittest.mock import patch, MagicMock
 
+from constants import EntityType
 from worker import (
     demand_match,
     cleanup_pods,
@@ -8,27 +9,29 @@ from worker import (
 )
 
 
-def make_pod(name, phase="Running", org_id=None, board=None):
+def make_pod(name, phase="Running", entity_id=None, board=None):
     """Helper to create a mock k8s pod object."""
     pod = MagicMock()
     pod.metadata.name = name
     pod.metadata.labels = {"app": "rise-riscv-runner"}
-    if org_id:
-        pod.metadata.labels["riseproject.com/org_id"] = str(org_id)
+    if entity_id:
+        pod.metadata.labels["riseproject.com/entity_id"] = str(entity_id)
     if board:
         pod.metadata.labels["riseproject.com/board"] = board
     pod.status.phase = phase
     return pod
 
 
-def make_job(job_id, org_id="1000", org_name="test-org", k8s_pool="scw-em-rv1",
-             status="pending", installation_id="999", repo_full_name="test-org/repo"):
+def make_job(job_id, entity_id="1000", entity_name="test-org", k8s_pool="scw-em-rv1",
+             status="pending", installation_id="999", repo_full_name="test-org/repo",
+             entity_type=EntityType.ORGANIZATION):
     """Helper to create a mock Redis job hash."""
     return {
         "status": status,
         "job_id": str(job_id),
-        "org_id": str(org_id),
-        "org_name": org_name,
+        "entity_id": str(entity_id),
+        "entity_name": entity_name,
+        "entity_type": entity_type.value,
         "repo_full_name": repo_full_name,
         "installation_id": str(installation_id),
         "job_labels": json.dumps(["ubuntu-24.04-riscv"]),
@@ -45,17 +48,45 @@ def make_job(job_id, org_id="1000", org_name="test-org", k8s_pool="scw-em-rv1",
 @patch("worker.k8s.provision_runner")
 @patch("worker.gh.authenticate_app", return_value="token-123")
 @patch("worker.gh.ensure_runner_group", return_value=42)
-@patch("worker.gh.create_jit_runner_config", return_value="jit-config-encoded")
-def test_demand_match_provisions_job(mock_jit, mock_group, mock_auth, mock_provision, mock_slot, mock_db):
-    """Test that demand_match provisions a pending job when capacity exists."""
+@patch("worker.gh.create_jit_runner_config_org", return_value="jit-config-encoded")
+def test_demand_match_provisions_org_job(mock_jit, mock_group, mock_auth, mock_provision, mock_slot, mock_db):
+    """Test that demand_match provisions a pending org job when capacity exists."""
     job = make_job(111)
     mock_db.get_pending_jobs.return_value = ["111"]
     mock_db.get_job.return_value = job
     mock_db.get_pool_demand.return_value = (1, 0)  # 1 job, 0 workers = deficit
-    mock_db.get_total_workers_for_org.return_value = 0
+    mock_db.get_total_workers_for_entity.return_value = 0
 
     demand_match()
 
+    mock_auth.assert_called_once_with(999, entity_type=EntityType.ORGANIZATION)
+    mock_group.assert_called_once()
+    mock_jit.assert_called_once()
+    mock_provision.assert_called_once()
+    mock_db.add_worker.assert_called_once()
+
+
+@patch("worker.db")
+@patch("worker.k8s.has_available_slot", return_value=True)
+@patch("worker.k8s.provision_runner")
+@patch("worker.gh.authenticate_app", return_value="token-123")
+@patch("worker.gh.create_jit_runner_config_repo", return_value="jit-config-repo")
+def test_demand_match_provisions_personal_job(mock_jit_repo, mock_auth, mock_provision, mock_slot, mock_db):
+    """Test that demand_match provisions a pending personal account job (repo-scoped)."""
+    job = make_job(222, entity_id="200", entity_name="someuser", entity_type=EntityType.USER,
+                   repo_full_name="someuser/myrepo")
+    mock_db.get_pending_jobs.return_value = ["222"]
+    mock_db.get_job.return_value = job
+    mock_db.get_pool_demand.return_value = (1, 0)
+    mock_db.get_total_workers_for_entity.return_value = 0
+
+    demand_match()
+
+    mock_auth.assert_called_once_with(999, entity_type=EntityType.USER)
+    mock_jit_repo.assert_called_once()
+    # Verify repo_full_name is passed
+    call_args = mock_jit_repo.call_args
+    assert call_args[0][2] == "someuser/myrepo"  # repo_full_name
     mock_provision.assert_called_once()
     mock_db.add_worker.assert_called_once()
 
@@ -84,7 +115,7 @@ def test_demand_match_skips_no_k8s_capacity(mock_provision, mock_slot, mock_db):
     mock_db.get_pending_jobs.return_value = ["111"]
     mock_db.get_job.return_value = job
     mock_db.get_pool_demand.return_value = (1, 0)
-    mock_db.get_total_workers_for_org.return_value = 0
+    mock_db.get_total_workers_for_entity.return_value = 0
 
     demand_match()
 
@@ -96,11 +127,11 @@ def test_demand_match_skips_no_k8s_capacity(mock_provision, mock_slot, mock_db):
 @patch("worker.k8s.provision_runner")
 def test_demand_match_respects_max_workers(mock_provision, mock_slot, mock_db):
     """Test that max_workers cap is respected."""
-    job = make_job(111, org_id="660779", org_name="luhenry")  # max_workers=5
+    job = make_job(111, entity_id="660779", entity_name="luhenry")  # max_workers defaults to 20
     mock_db.get_pending_jobs.return_value = ["111"]
     mock_db.get_job.return_value = job
     mock_db.get_pool_demand.return_value = (1, 0)
-    mock_db.get_total_workers_for_org.return_value = 5  # at cap
+    mock_db.get_total_workers_for_entity.return_value = 20  # at default cap
 
     demand_match()
 
@@ -112,14 +143,14 @@ def test_demand_match_respects_max_workers(mock_provision, mock_slot, mock_db):
 @patch("worker.k8s.provision_runner", side_effect=Exception("K8s error"))
 @patch("worker.gh.authenticate_app", return_value="token-123")
 @patch("worker.gh.ensure_runner_group", return_value=42)
-@patch("worker.gh.create_jit_runner_config", return_value="jit-config")
+@patch("worker.gh.create_jit_runner_config_org", return_value="jit-config")
 def test_demand_match_handles_provision_failure(mock_jit, mock_group, mock_auth, mock_provision, mock_slot, mock_db):
     """Test that provisioning failure is handled gracefully."""
     job = make_job(111)
     mock_db.get_pending_jobs.return_value = ["111"]
     mock_db.get_job.return_value = job
     mock_db.get_pool_demand.return_value = (1, 0)
-    mock_db.get_total_workers_for_org.return_value = 0
+    mock_db.get_total_workers_for_entity.return_value = 0
 
     demand_match()  # should not raise
 
@@ -133,7 +164,7 @@ def test_demand_match_handles_provision_failure(mock_jit, mock_group, mock_auth,
 @patch("worker.k8s.delete_pod")
 def test_cleanup_deletes_succeeded_pod(mock_delete, mock_list, mock_db):
     """Test that succeeded pods are deleted and removed from worker pool."""
-    pod = make_pod("pod-1", phase="Succeeded", org_id="1000", board="scw-em-rv1")
+    pod = make_pod("pod-1", phase="Succeeded", entity_id="1000", board="scw-em-rv1")
     mock_list.return_value = [pod]
     mock_db.get_all_active_job_ids.return_value = set()
     mock_db.init_client.return_value = MagicMock(scan_iter=MagicMock(return_value=[]))
@@ -149,7 +180,7 @@ def test_cleanup_deletes_succeeded_pod(mock_delete, mock_list, mock_db):
 @patch("worker.k8s.delete_pod")
 def test_cleanup_skips_running_pod(mock_delete, mock_list, mock_db):
     """Test that running pods are not deleted."""
-    pod = make_pod("pod-1", phase="Running", org_id="1000", board="scw-em-rv1")
+    pod = make_pod("pod-1", phase="Running", entity_id="1000", board="scw-em-rv1")
     mock_list.return_value = [pod]
     mock_db.get_all_active_job_ids.return_value = set()
     mock_db.init_client.return_value = MagicMock(scan_iter=MagicMock(return_value=[]))
@@ -165,7 +196,7 @@ def test_cleanup_skips_running_pod(mock_delete, mock_list, mock_db):
 @patch("worker.k8s.delete_pod", side_effect=Exception("k8s error"))
 def test_cleanup_handles_delete_failure(mock_delete, mock_list, mock_db):
     """Test that delete failure doesn't crash and doesn't remove worker."""
-    pod = make_pod("pod-1", phase="Failed", org_id="1000", board="scw-em-rv1")
+    pod = make_pod("pod-1", phase="Failed", entity_id="1000", board="scw-em-rv1")
     mock_list.return_value = [pod]
     mock_db.get_all_active_job_ids.return_value = set()
     mock_db.init_client.return_value = MagicMock(scan_iter=MagicMock(return_value=[]))

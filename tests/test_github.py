@@ -1,19 +1,21 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
+from constants import EntityType
 from github import (
     GitHubAPIError,
     authenticate_app,
     ensure_runner_group,
-    create_jit_runner_config,
+    create_jit_runner_config_org,
+    create_jit_runner_config_repo,
     get_job_status,
 )
 
 
 # --- Authentication ---
 
-@patch("github.init_ghapp_private_key")
-def test_authenticate_app(mock_private_key, requests_mock):
+@patch("github.init_ghapp_private_key_org")
+def test_authenticate_app_org(mock_private_key, requests_mock):
     mock_private_key.return_value = MagicMock()
 
     requests_mock.post(
@@ -23,11 +25,26 @@ def test_authenticate_app(mock_private_key, requests_mock):
     )
 
     with patch("github.generate_jwt", return_value="fake-jwt"):
-        token = authenticate_app(12345)
+        token = authenticate_app(12345, entity_type=EntityType.ORGANIZATION)
     assert token == "v1.test-token"
 
 
-@patch("github.init_ghapp_private_key")
+@patch("github.init_ghapp_private_key_personal")
+def test_authenticate_app_personal(mock_private_key, requests_mock):
+    mock_private_key.return_value = MagicMock()
+
+    requests_mock.post(
+        "https://api.github.com/app/installations/67890/access_tokens",
+        json={"token": "v1.personal-token"},
+        status_code=201,
+    )
+
+    with patch("github.generate_jwt", return_value="fake-jwt"):
+        token = authenticate_app(67890, entity_type=EntityType.USER)
+    assert token == "v1.personal-token"
+
+
+@patch("github.init_ghapp_private_key_org")
 def test_authenticate_app_failure(mock_private_key, requests_mock):
     mock_private_key.return_value = MagicMock()
 
@@ -39,7 +56,7 @@ def test_authenticate_app_failure(mock_private_key, requests_mock):
 
     with patch("github.generate_jwt", return_value="fake-jwt"):
         with pytest.raises(GitHubAPIError) as exc:
-            authenticate_app(12345)
+            authenticate_app(12345, entity_type=EntityType.ORGANIZATION)
     assert exc.value.status_code == 401
 
 
@@ -76,9 +93,9 @@ def test_ensure_runner_group_creates(requests_mock):
     assert group_id == 99
 
 
-# --- JIT runner config ---
+# --- JIT runner config (org) ---
 
-def test_create_jit_runner_config(requests_mock):
+def test_create_jit_runner_config_org(requests_mock):
     requests_mock.post(
         "https://api.github.com/orgs/test-org/actions/runners/generate-jitconfig",
         json={
@@ -88,13 +105,13 @@ def test_create_jit_runner_config(requests_mock):
         status_code=201,
     )
 
-    jit_config = create_jit_runner_config(
+    jit_config = create_jit_runner_config_org(
         "token", 42, ["ubuntu-24.04-riscv"], "test-org", "runner-1"
     )
     assert jit_config == "base64-jit-config"
 
 
-def test_create_jit_runner_config_failure(requests_mock):
+def test_create_jit_runner_config_org_failure(requests_mock):
     requests_mock.post(
         "https://api.github.com/orgs/test-org/actions/runners/generate-jitconfig",
         json={"message": "Conflict"},
@@ -102,7 +119,36 @@ def test_create_jit_runner_config_failure(requests_mock):
     )
 
     with pytest.raises(GitHubAPIError):
-        create_jit_runner_config("token", 42, ["ubuntu-24.04-riscv"], "test-org", "runner-1")
+        create_jit_runner_config_org("token", 42, ["ubuntu-24.04-riscv"], "test-org", "runner-1")
+
+
+# --- JIT runner config (repo) ---
+
+def test_create_jit_runner_config_repo(requests_mock):
+    requests_mock.post(
+        "https://api.github.com/repos/user/repo/actions/runners/generate-jitconfig",
+        json={
+            "runner": {"id": 24, "name": "test-runner"},
+            "encoded_jit_config": "base64-repo-jit-config",
+        },
+        status_code=201,
+    )
+
+    jit_config = create_jit_runner_config_repo(
+        "token", ["ubuntu-24.04-riscv"], "user/repo", "runner-2"
+    )
+    assert jit_config == "base64-repo-jit-config"
+
+
+def test_create_jit_runner_config_repo_failure(requests_mock):
+    requests_mock.post(
+        "https://api.github.com/repos/user/repo/actions/runners/generate-jitconfig",
+        json={"message": "Not Found"},
+        status_code=404,
+    )
+
+    with pytest.raises(GitHubAPIError):
+        create_jit_runner_config_repo("token", ["ubuntu-24.04-riscv"], "user/repo", "runner-2")
 
 
 # --- Job status ---
