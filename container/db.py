@@ -17,10 +17,10 @@ ENV_PREFIX = "prod" if PROD else "staging"
 
 def _job_key(job_id):
     return f"{ENV_PREFIX}:job:{job_id}"
-def _pool_jobs_key(org_id, k8s_pool):
-    return f"{ENV_PREFIX}:pool:{org_id}:{k8s_pool}:jobs"
-def _pool_workers_key(org_id, k8s_pool):
-    return f"{ENV_PREFIX}:pool:{org_id}:{k8s_pool}:workers"
+def _pool_jobs_key(entity_id, k8s_pool):
+    return f"{ENV_PREFIX}:pool:{entity_id}:{k8s_pool}:jobs"
+def _pool_workers_key(entity_id, k8s_pool):
+    return f"{ENV_PREFIX}:pool:{entity_id}:{k8s_pool}:workers"
 
 
 @functools.lru_cache(maxsize=1)
@@ -32,7 +32,7 @@ def _init_client():
 
 # --- Handler operations ---
 
-def store_job(job_id, org_id, org_name, repo_full_name, installation_id, labels, k8s_pool, k8s_image, html_url):
+def store_job(job_id, entity_id, entity_name, entity_type, repo_full_name, installation_id, labels, k8s_pool, k8s_image, html_url):
     """Store a new job. Returns True if created, False if duplicate."""
     r = _init_client()
     key = _job_key(job_id)
@@ -47,8 +47,9 @@ def store_job(job_id, org_id, org_name, repo_full_name, installation_id, labels,
     pipe.hset(key, mapping={
         "status": "pending",
         "job_id": str(job_id),
-        "org_id": str(org_id),
-        "org_name": org_name,
+        "entity_id": str(entity_id),
+        "entity_name": entity_name,
+        "entity_type": entity_type.value if hasattr(entity_type, 'value') else str(entity_type),
         "repo_full_name": repo_full_name,
         "installation_id": str(installation_id),
         "job_labels": json.dumps(labels),
@@ -57,10 +58,10 @@ def store_job(job_id, org_id, org_name, repo_full_name, installation_id, labels,
         "html_url": html_url,
         "created_at": str(now),
     })
-    pipe.sadd(_pool_jobs_key(org_id, k8s_pool), str(job_id))
+    pipe.sadd(_pool_jobs_key(entity_id, k8s_pool), str(job_id))
     pipe.execute()
 
-    logger.info("Stored job %s for org %s pool %s", job_id, org_name, k8s_pool)
+    logger.info("Stored job %s for entity %s pool %s", job_id, entity_name, k8s_pool)
     with queue_event:
         queue_event.notify()
     return True
@@ -95,13 +96,13 @@ def update_job_completed(job_id):
         return None
 
     prev_status = data.get("status")
-    org_id = data.get("org_id")
+    entity_id = data.get("entity_id") or data.get("org_id")  # migration fallback
     k8s_pool = data.get("k8s_pool")
 
     pipe = r.pipeline()
     pipe.hset(key, "status", "completed")
-    if org_id and k8s_pool:
-        pipe.srem(_pool_jobs_key(org_id, k8s_pool), str(job_id))
+    if entity_id and k8s_pool:
+        pipe.srem(_pool_jobs_key(entity_id, k8s_pool), str(job_id))
     pipe.execute()
 
     logger.info("Job %s status updated to completed (was %s)", job_id, prev_status)
@@ -111,21 +112,21 @@ def update_job_completed(job_id):
 # --- Worker operations ---
 
 
-def get_pool_demand(org_id, k8s_pool):
+def get_pool_demand(entity_id, k8s_pool):
     """Return (job_count, worker_count) for a pool."""
     r = _init_client()
     pipe = r.pipeline()
-    pipe.scard(_pool_jobs_key(org_id, k8s_pool))
-    pipe.scard(_pool_workers_key(org_id, k8s_pool))
+    pipe.scard(_pool_jobs_key(entity_id, k8s_pool))
+    pipe.scard(_pool_workers_key(entity_id, k8s_pool))
     job_count, worker_count = pipe.execute()
     return job_count, worker_count
 
 
-def get_total_workers_for_org(org_id):
-    """Return total worker count across all pools for an org."""
+def get_total_workers_for_entity(entity_id):
+    """Return total worker count across all pools for a entity_id (org_id or repo_id)."""
     r = _init_client()
     total = 0
-    for key in r.scan_iter(match=f"{ENV_PREFIX}:pool:{org_id}:*:workers"):
+    for key in r.scan_iter(match=f"{ENV_PREFIX}:pool:{entity_id}:*:workers"):
         total += r.scard(key)
     return total
 
@@ -142,28 +143,28 @@ def get_pending_jobs():
     return [job_id for job_id, _ in sorted(pending, key=lambda x: x[1])]
 
 
-def add_worker(org_id, k8s_pool, pod_name):
+def add_worker(entity_id, k8s_pool, pod_name):
     """Add a worker pod to the pool."""
     r = _init_client()
-    r.sadd(_pool_workers_key(org_id, k8s_pool), pod_name)
-    logger.debug("Added worker %s to pool %s:%s", pod_name, org_id, k8s_pool)
+    r.sadd(_pool_workers_key(entity_id, k8s_pool), pod_name)
+    logger.debug("Added worker %s to pool %s:%s", pod_name, entity_id, k8s_pool)
 
 
-def remove_worker(org_id, k8s_pool, pod_name):
+def remove_worker(entity_id, k8s_pool, pod_name):
     """Remove a worker pod from the pool."""
     r = _init_client()
-    r.srem(_pool_workers_key(org_id, k8s_pool), pod_name)
-    logger.debug("Removed worker %s from pool %s:%s", pod_name, org_id, k8s_pool)
+    r.srem(_pool_workers_key(entity_id, k8s_pool), pod_name)
+    logger.debug("Removed worker %s from pool %s:%s", pod_name, entity_id, k8s_pool)
 
 
 def iter_workers():
-    """Yield (org_id, k8s_pool, pod_name) for all workers."""
+    """Yield (entity_id, k8s_pool, pod_name) for all workers."""
     r = _init_client()
     for key in r.scan_iter(match=f"{ENV_PREFIX}:pool:*:workers"):
         parts = key.split(":")
-        org_id, k8s_pool = parts[2], parts[3]
+        entity_id, k8s_pool = parts[2], parts[3]
         for pod_name in r.smembers(key):
-            yield org_id, k8s_pool, pod_name
+            yield entity_id, k8s_pool, pod_name
 
 def get_job(job_id):
     """Return the full job hash."""
@@ -188,34 +189,33 @@ def get_all_active_job_ids():
 
 
 def get_pool_usage():
-    """Return detailed usage: {(org_id, pool): {org_name, jobs: [{job_id, status, repo}], workers: [name]}}."""
+    """Return detailed usage: {(entity_id, pool): {entity_name, jobs: [{job_id, status, repo}], workers: [name]}}."""
     r = _init_client()
     result = {}
     for key in r.scan_iter(match=f"{ENV_PREFIX}:pool:*:jobs"):
         parts = key.split(":")
-        org_id, k8s_pool = parts[2], parts[3]
+        entity_id, k8s_pool = parts[2], parts[3]
         job_ids = r.smembers(key)
         jobs = []
-        org_name = org_id
+        entity_name = entity_id
         for jid in job_ids:
             data = r.hgetall(_job_key(jid))
             if data:
-                if data.get("org_name"):
-                    org_name = data["org_name"]
+                entity_name = data.get("entity_name") or data.get("org_name") or entity_name  # migration fallback
                 jobs.append({
                     "job_id": jid,
                     "status": data.get("status", "unknown"),
                     "html_url": data.get("html_url", ""),
                 })
-        workers = list(r.smembers(_pool_workers_key(org_id, k8s_pool)))
-        result[(org_id, k8s_pool)] = {"org_name": org_name, "jobs": jobs, "workers": workers}
+        workers = list(r.smembers(_pool_workers_key(entity_id, k8s_pool)))
+        result[(entity_id, k8s_pool)] = {"entity_name": entity_name, "jobs": jobs, "workers": workers}
     # Also pick up pools that only have workers but no jobs
     for key in r.scan_iter(match=f"{ENV_PREFIX}:pool:*:workers"):
         parts = key.split(":")
-        org_id, k8s_pool = parts[2], parts[3]
-        if (org_id, k8s_pool) not in result:
+        entity_id, k8s_pool = parts[2], parts[3]
+        if (entity_id, k8s_pool) not in result:
             workers = list(r.smembers(key))
-            result[(org_id, k8s_pool)] = {"org_name": org_id, "jobs": [], "workers": workers}
+            result[(entity_id, k8s_pool)] = {"entity_name": entity_id, "jobs": [], "workers": workers}
     return result
 
 

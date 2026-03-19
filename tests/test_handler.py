@@ -2,11 +2,12 @@ import json
 import pytest
 from unittest.mock import patch, MagicMock
 
+from constants import EntityType
 from handler import (
     WebhookError,
     check_webhook_signature,
     check_webhook_event,
-    authorize_organization,
+    authorize_entity,
     compute_signature,
     match_labels_to_k8s,
     ALLOWED_ORGS,
@@ -80,21 +81,30 @@ def test_invalid_json():
     assert exc.value.status_code == 400
 
 
-# --- Organization authorization ---
+# --- Owner authorization ---
 
-def test_authorized_user():
+def test_authorized_org():
     org_id = 152654596
-    payload = {"repository": {"owner": {"id": org_id, "login": "riseproject-dev"}}}
-    result = authorize_organization(payload)
-    assert result == org_id
+    payload = {"repository": {"owner": {"id": org_id, "login": "riseproject-dev", "type": "Organization"}}}
+    entity_id, entity_type = authorize_entity(payload)
+    assert entity_id == org_id
+    assert entity_type == EntityType.ORGANIZATION
 
 
-def test_unauthorized_user():
-    payload = {"repository": {"owner": {"id": 1, "login": "unknown-org"}}}
+def test_unauthorized_org():
+    payload = {"repository": {"owner": {"id": 1, "login": "unknown-org", "type": "Organization"}}}
     with pytest.raises(WebhookError) as exc:
-        authorize_organization(payload)
+        authorize_entity(payload)
     assert exc.value.status_code == 200
     assert "not authorized" in exc.value.message
+
+
+def test_personal_account_accepted():
+    """Personal accounts are accepted without allowlist check."""
+    payload = {"repository": {"owner": {"id": 99999, "login": "some-user", "type": "User"}}}
+    entity_id, entity_type = authorize_entity(payload)
+    assert entity_id == 99999
+    assert entity_type == EntityType.USER
 
 
 # --- Label matching ---
@@ -140,7 +150,7 @@ def test_webhook_queued_stores_job(mock_store, mock_connect):
     payload = {
         "action": "queued",
         "workflow_job": {"id": 12345, "name": "test", "labels": ["ubuntu-24.04-riscv"], "html_url": "https://github.com/riseproject-dev/sample/actions/runs/1/job/12345"},
-        "repository": {"id": 100, "full_name": "riseproject-dev/sample", "owner": {"id": 152654596, "login": "riseproject-dev"}},
+        "repository": {"id": 100, "full_name": "riseproject-dev/sample", "owner": {"id": 152654596, "login": "riseproject-dev", "type": "Organization"}},
         "installation": {"id": 999},
     }
     body = json.dumps(payload)
@@ -158,14 +168,54 @@ def test_webhook_queued_stores_job(mock_store, mock_connect):
         assert b"stored" in resp.data
         mock_store.assert_called_once_with(
             job_id=12345,
-            org_id=152654596,
-            org_name="riseproject-dev",
+            entity_id=152654596,
+            entity_name="riseproject-dev",
+            entity_type=EntityType.ORGANIZATION,
             repo_full_name="riseproject-dev/sample",
             installation_id=999,
             labels=["ubuntu-24.04-riscv"],
             k8s_pool="scw-em-rv1",
             k8s_image="rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0",
             html_url="https://github.com/riseproject-dev/sample/actions/runs/1/job/12345",
+        )
+
+
+@patch("db._init_client")
+@patch("db.store_job", return_value=True)
+def test_webhook_queued_personal_account(mock_store, mock_connect):
+    """Test that a queued webhook from a personal account uses repo_id as entity_id."""
+    from handler import app
+
+    payload = {
+        "action": "queued",
+        "workflow_job": {"id": 55555, "name": "test", "labels": ["ubuntu-24.04-riscv"], "html_url": "https://github.com/someuser/myrepo/actions/runs/1/job/55555"},
+        "repository": {"id": 200, "full_name": "someuser/myrepo", "owner": {"id": 99999, "login": "someuser", "type": "User"}},
+        "installation": {"id": 888},
+    }
+    body = json.dumps(payload)
+    sig = "sha256=" + compute_signature(body, GHAPP_WEBHOOK_SECRET).hexdigest()
+
+    mock_connect.return_value = MagicMock()
+
+    with app.test_client() as client:
+        resp = client.post("/", data=body, headers={
+            "X-Hub-Signature-256": sig,
+            "X-Github-Event": "workflow_job",
+            "Content-Type": "application/json",
+        })
+        assert resp.status_code == 200
+        assert b"stored" in resp.data
+        mock_store.assert_called_once_with(
+            job_id=55555,
+            entity_id=200,  # repo_id for personal accounts
+            entity_name="someuser",
+            entity_type=EntityType.USER,
+            repo_full_name="someuser/myrepo",
+            installation_id=888,
+            labels=["ubuntu-24.04-riscv"],
+            k8s_pool="scw-em-rv1",
+            k8s_image="rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0",
+            html_url="https://github.com/someuser/myrepo/actions/runs/1/job/55555",
         )
 
 
@@ -178,7 +228,7 @@ def test_webhook_in_progress(mock_update, mock_connect):
     payload = {
         "action": "in_progress",
         "workflow_job": {"id": 12345, "name": "test", "labels": ["ubuntu-24.04-riscv"]},
-        "repository": {"full_name": "riseproject-dev/sample", "owner": {"id": 152654596, "login": "riseproject-dev"}},
+        "repository": {"id": 100, "full_name": "riseproject-dev/sample", "owner": {"id": 152654596, "login": "riseproject-dev", "type": "Organization"}},
     }
     body = json.dumps(payload)
     sig = "sha256=" + compute_signature(body, GHAPP_WEBHOOK_SECRET).hexdigest()
@@ -205,7 +255,7 @@ def test_webhook_completed(mock_complete, mock_connect):
     payload = {
         "action": "completed",
         "workflow_job": {"id": 12345, "name": "test", "labels": ["ubuntu-24.04-riscv"]},
-        "repository": {"full_name": "riseproject-dev/sample", "owner": {"id": 152654596, "login": "riseproject-dev"}},
+        "repository": {"id": 100, "full_name": "riseproject-dev/sample", "owner": {"id": 152654596, "login": "riseproject-dev", "type": "Organization"}},
     }
     body = json.dumps(payload)
     sig = "sha256=" + compute_signature(body, GHAPP_WEBHOOK_SECRET).hexdigest()

@@ -30,7 +30,7 @@ def test_provision_runner_success(mock_core_v1_api, mock_init_client):
     pod_manifest = call_args[1]['body']
     assert pod_manifest['metadata']['name'] == "runner-1"
     assert pod_manifest['metadata']['labels']['app'] == "rise-riscv-runner"
-    assert pod_manifest['metadata']['labels']['riseproject.com/org_id'] == "1000"
+    assert pod_manifest['metadata']['labels']['riseproject.com/entity_id'] == "1000"
     assert pod_manifest['metadata']['labels']['riseproject.com/board'] == "scw-em-rv1"
     assert 'riseproject.com/job_id' not in pod_manifest['metadata']['labels']
     assert pod_manifest['spec']['nodeSelector'] == {"riseproject.dev/board": "scw-em-rv1"}

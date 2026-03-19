@@ -75,7 +75,7 @@ Extract GitHub API functions from `handler.py`:
 - `GitHubAPIError(status_code, message)` exception
 - `init_ghapp_private_key()` — cached
 - `generate_jwt(app_id, private_key)`
-- `authenticate_app(installation_id, repo_id=None)`
+- `authenticate_app(installation_id)`
 - `ensure_runner_group(org_name, token, group_name)` → group_id
 - `create_jit_runner_config(token, group_id, labels, org_name, runner_name)` → jit_config
 - `get_job_status(repo_full_name, job_id, token)` → status string — for reconciliation

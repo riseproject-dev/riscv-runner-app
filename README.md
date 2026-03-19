@@ -42,9 +42,11 @@ Available platform labels:
 
 ## Architecture
 
-The app uses a **demand matching** model: on one side, workflow_jobs create demand for runners; on the other, k8s workers provide supply. The background worker scales supply to match demand per (org, k8s_pool) pool, with configurable limits per org.
+The app uses a **demand matching** model: on one side, workflow_jobs create demand for runners; on the other, k8s workers provide supply. The background worker scales supply to match demand per (entity, k8s_pool) pool, with configurable limits.
 
-Jobs and workers are not directly linked -- the only relationship is through the org. GitHub makes no direct job-to-runner link; a runner is attached to an org, and the job runs inside that org.
+Two GitHub Apps are used: one for organizations (org-scoped runners with runner groups) and one for personal accounts (repo-scoped runners). The `entity_id` abstracts over both: it is `org_id` for organizations or `repo_id` for personal accounts.
+
+Jobs and workers are not directly linked -- the only relationship is through the entity. GitHub makes no direct job-to-runner link; a runner is attached to an org or repo, and the job runs inside that context.
 
 ```
 GitHub (workflow_job webhook)
@@ -53,7 +55,7 @@ GitHub (workflow_job webhook)
 Webhook Handler (handler.py)
   |  - Proxies webhooks to staging for staging orgs (prod only)
   |  - Verifies webhook signature
-  |  - Validates labels, authorizes org
+  |  - Validates labels, authorizes entity (org or personal account)
   |  - Resolves (org_id, labels) -> (k8s_pool, k8s_image)
   |  - Writes job to Redis
   |  - Serves /usage (per-pool jobs and workers)
@@ -157,16 +159,18 @@ All keys are prefixed with `prod:` or `staging:` depending on environment.
 | Key | Type | Contents | Purpose |
 |-----|------|----------|---------|
 | `{env}:job:{job_id}` | HASH | job data | Per-job metadata |
-| `{env}:pool:{org_id}:{k8s_pool}:jobs` | SET | job_ids | Demand: pending+running jobs for this pool |
-| `{env}:pool:{org_id}:{k8s_pool}:workers` | SET | pod_names | Supply: provisioned pods for this pool |
+| `{env}:pool:{entity_id}:{k8s_pool}:jobs` | SET | job_ids | Demand: pending+running jobs for this pool |
+| `{env}:pool:{entity_id}:{k8s_pool}:workers` | SET | pod_names | Supply: provisioned pods for this pool |
 
-**Job hash fields**: `job_id`, `org_id`, `org_name`, `repo_full_name`, `installation_id`, `job_labels` (JSON), `k8s_pool`, `k8s_image`, `html_url`, `status` (pending/running/completed), `created_at`
+`entity_id` is `org_id` for organizations, or `repo_id` for personal accounts.
+
+**Job hash fields**: `job_id`, `entity_id`, `entity_name`, `entity_type` (Organization/User), `repo_full_name`, `installation_id`, `job_labels` (JSON), `k8s_pool`, `k8s_image`, `html_url`, `status` (pending/running/completed), `created_at`
 
 ### Demand matching algorithm
 
 ```
-demand  = SCARD(pool:{org_id}:{k8s_pool}:jobs)      # pending + running jobs
-supply  = SCARD(pool:{org_id}:{k8s_pool}:workers)   # provisioned pods
+demand  = SCARD(pool:{entity_id}:{k8s_pool}:jobs)      # pending + running jobs
+supply  = SCARD(pool:{entity_id}:{k8s_pool}:workers)   # provisioned pods
 deficit = demand - supply
 ```
 
@@ -262,8 +266,9 @@ The following secrets must be configured in the repository settings (Settings > 
 | Secret | Description |
 |---|---|
 | `SCW_SECRET_KEY` | Scaleway API secret key (used for container registry login and serverless deploy) |
-| `GHAPP_WEBHOOK_SECRET` | GitHub webhook HMAC secret |
-| `GHAPP_PRIVATE_KEY` | GitHub App RSA private key (PEM format) |
+| `GHAPP_WEBHOOK_SECRET` | GitHub webhook HMAC secret (shared by both apps) |
+| `GHAPP_ORG_PRIVATE_KEY` | GitHub App RSA private key for organizations (PEM format) |
+| `GHAPP_PERSONAL_PRIVATE_KEY` | GitHub App RSA private key for personal accounts (PEM format) |
 | `K8S_KUBECONFIG` | Kubeconfig for the Kubernetes cluster |
 | `REDIS_URL` | Redis connection string (e.g. `rediss://default:<password>@<host>:<port>`) |
 | `RISCV_RUNNER_SAMPLE_ACCESS_TOKEN` | PAT for triggering sample workflow on staging deploy |
@@ -297,11 +302,11 @@ kubectl delete pods -l app=rise-riscv-runner --field-selector=status.phase!=Runn
 ### Inspect Redis state
 
 ```bash
-# Check demand for a pool
-redis-cli SCARD staging:pool:{org_id}:{k8s_pool}:jobs
+# Check demand for a pool (entity_id = org_id for orgs, repo_id for personal)
+redis-cli SCARD staging:pool:{entity_id}:{k8s_pool}:jobs
 
 # Check supply for a pool
-redis-cli SCARD staging:pool:{org_id}:{k8s_pool}:workers
+redis-cli SCARD staging:pool:{entity_id}:{k8s_pool}:workers
 
 # View a job
 redis-cli HGETALL staging:job:{job_id}
