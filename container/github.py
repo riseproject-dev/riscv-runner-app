@@ -140,6 +140,7 @@ def create_jit_runner_config_repo(token, labels, repo_full_name, runner_name):
     url = f"https://api.github.com/repos/{repo_full_name}/actions/runners/generate-jitconfig"
     body = {
         "name": runner_name,
+        "runner_group_id": 1,  # default runner group for repos
         "labels": labels,
     }
     response = requests.post(url, headers=headers, json=body)
