@@ -83,6 +83,15 @@ def provision_runner(jit_config, runner_name, k8s_image, k8s_pool, entity_id):
                         "imagePullPolicy": "Always",
                         "restartPolicy": "Always", # makes it a "sidecar"
                         "securityContext": {"privileged": True},
+                        "args": [
+                            # The DinD container's docker0 bridge defaults to MTU 1500, but the
+                            # underlying Flannel/CNI overlay network only supports 1450, causing
+                            # large packets (like TLS ClientHello) to be silently dropped and TLS
+                            # handshakes to hang.
+                            # Fix: set dockerd --mtu=1450 in the DinD container to match the pod
+                            # network's path MTU.
+                            "--mtu=1450",
+                        ],
                         "env": [
                             {"name": "DOCKER_TLS_CERTDIR", "value": "/docker-certs"},
                         ],
