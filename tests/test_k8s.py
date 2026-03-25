@@ -39,7 +39,7 @@ def test_provision_runner_success(mock_core_v1_api, mock_init_client):
 
 
 def test_provision_runner_config_exception():
-    """Test k8s provisioning failure due to missing K8S_KUBECONFIG."""
+    """Test k8s provisioning failure due to missing KUBECONFIG."""
     import k8s
     k8s._init_client.cache_clear()
     try:

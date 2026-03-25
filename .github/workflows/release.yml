@@ -85,7 +85,7 @@ jobs:
           GHAPP_WEBHOOK_SECRET: ${{ secrets.GHAPP_WEBHOOK_SECRET }}
           GHAPP_ORG_PRIVATE_KEY: ${{ secrets.GHAPP_ORG_PRIVATE_KEY }}
           GHAPP_PERSONAL_PRIVATE_KEY: ${{ secrets.GHAPP_PERSONAL_PRIVATE_KEY }}
-          K8S_KUBECONFIG: ${{ secrets.K8S_KUBECONFIG }}
+          KUBECONFIG: ${{ secrets.KUBECONFIG }}
           REDIS_URL: ${{ secrets.REDIS_URL }}
 
       - name: Health check

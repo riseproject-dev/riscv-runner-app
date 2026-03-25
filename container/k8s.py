@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 @functools.lru_cache(maxsize=1)
 def _init_client():
     """Create a Kubernetes API client from a kubeconfig env var."""
-    return k8s.config.new_client_from_config_dict(yaml.safe_load(K8S_KUBECONFIG))
+    return k8s.config.new_client_from_config_dict(yaml.safe_load(KUBECONFIG))
 
 
 def provision_runner(jit_config, runner_name, k8s_image, k8s_pool, entity_id):
@@ -128,7 +128,7 @@ def provision_runner(jit_config, runner_name, k8s_image, k8s_pool, entity_id):
             }
         }
 
-        api.create_namespaced_pod(body=pod_manifest, namespace=K8S_NAMESPACE)
+        api.create_namespaced_pod(body=pod_manifest, namespace=KUBENAMESPACE)
 
 
 def delete_pod(pod):
@@ -137,7 +137,7 @@ def delete_pod(pod):
     with _init_client() as client:
         api = k8s.client.CoreV1Api(client)
         try:
-            api.delete_namespaced_pod(name=pod.metadata.name, namespace=K8S_NAMESPACE)
+            api.delete_namespaced_pod(name=pod.metadata.name, namespace=KUBENAMESPACE)
             logger.info("Deleted runner pod %s", pod.metadata.name)
             return f"Pod {pod.metadata.name} deleted successfully."
         except k8s.client.exceptions.ApiException as e:
@@ -163,7 +163,7 @@ def has_available_slot(node_selector):
         )
 
         pods = api.list_namespaced_pod(
-            namespace=K8S_NAMESPACE, label_selector="app=rise-riscv-runner"
+            namespace=KUBENAMESPACE, label_selector="app=rise-riscv-runner"
         )
         active = sum(
             1 for p in pods.items
@@ -182,7 +182,7 @@ def get_pod_events(pod_name):
     with _init_client() as client:
         api = k8s.client.CoreV1Api(client)
         events = api.list_namespaced_event(
-            namespace=K8S_NAMESPACE,
+            namespace=KUBENAMESPACE,
             field_selector=f"involvedObject.name={pod_name}",
         )
         sorted_events = sorted(
@@ -197,6 +197,6 @@ def list_pods():
     with _init_client() as client:
         api = k8s.client.CoreV1Api(client)
         pods = api.list_namespaced_pod(
-            namespace=K8S_NAMESPACE, label_selector="app=rise-riscv-runner"
+            namespace=KUBENAMESPACE, label_selector="app=rise-riscv-runner"
         )
         return pods.items

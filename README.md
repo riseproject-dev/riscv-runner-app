@@ -269,7 +269,7 @@ The following secrets must be configured in the repository settings (Settings > 
 | `GHAPP_WEBHOOK_SECRET` | GitHub webhook HMAC secret (shared by both apps) |
 | `GHAPP_ORG_PRIVATE_KEY` | GitHub App RSA private key for organizations (PEM format) |
 | `GHAPP_PERSONAL_PRIVATE_KEY` | GitHub App RSA private key for personal accounts (PEM format) |
-| `K8S_KUBECONFIG` | Kubeconfig for the Kubernetes cluster |
+| `KUBECONFIG` | Kubeconfig for the Kubernetes cluster |
 | `REDIS_URL` | Redis connection string (e.g. `rediss://default:<password>@<host>:<port>`) |
 | `RISCV_RUNNER_SAMPLE_ACCESS_TOKEN` | PAT for triggering sample workflow on staging deploy |
 
