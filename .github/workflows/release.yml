@@ -1,0 +1,103 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+      - staging
+  pull_request:
+    branches:
+      - staging
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: rg.fr-par.scw.cloud
+  IMAGE: funcscwriseriscvrunnerappqdvknz9s/gh-webhook
+  RELEASE_ENVIRONMENT: ${{ (github.ref == 'refs/heads/main' && 'prod') || (github.ref == 'refs/heads/staging' && 'staging') || '' }}
+  PROD_URL: https://riseriscvrunnerappqdvknz9s-gh-webhook.functions.fnc.fr-par.scw.cloud
+  STAGING_URL: https://riseriscvrunnerappst73ndwr0w-gh-webhook.functions.fnc.fr-par.scw.cloud
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+      - run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install -r container/requirements.txt
+          pip install -r requirements-dev.txt
+          PYTHONPATH=${{ github.workspace }}/container pytest
+
+  deploy:
+    if: github.repository_owner == 'riseproject-dev' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging')
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: rlespinasse/github-slug-action@9e7def61550737ba68c62d34a32dd31792e3f429 # v5.5.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      - name: Login to Container Registry
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ${{ env.REGISTRY }}/${{ env.IMAGE }}
+          username: nologin
+          password: ${{ secrets.SCW_SECRET_KEY }}
+
+      - name: Build gh-webhook image
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+        with:
+          platforms: linux/amd64
+          context: container
+          tags: |
+            ${{ github.ref == 'refs/heads/main' && format('{0}/{1}:latest', env.REGISTRY, env.IMAGE) || '' }}
+            ${{ github.ref != 'refs/heads/main' && format('{0}/{1}:{2}', env.REGISTRY, env.IMAGE, env.GITHUB_REF_NAME_SLUG) || '' }}
+          cache-from: |
+            type=gha,scope=gh-webhook-main
+            ${{ github.event_name == 'push' && format('type=gha,scope=type=gha,scope=gh-webhook-{0}', env.GITHUB_REF_NAME_SLUG) || '' }}
+            ${{ github.event_name == 'pull_request' && format('type=gha,scope=type=gha,scope=gh-webhook-pr-{0}', github.event.pull_request.number) || '' }}
+          cache-to: |
+            ${{ github.event_name == 'push' && format('type=gha,scope=type=gha,scope=gh-webhook-{0}', env.GITHUB_REF_NAME_SLUG) || '' }}
+            ${{ github.event_name == 'pull_request' && format('type=gha,scope=type=gha,scope=gh-webhook-pr-{0}', github.event.pull_request.number) || '' }}
+          push: true
+
+      - run: npm ci
+
+      - name: Deploy to Scaleway
+        run: npx serverless@3 deploy --verbose --stage=${{ env.RELEASE_ENVIRONMENT }}
+        env:
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+          GHAPP_WEBHOOK_SECRET: ${{ secrets.GHAPP_WEBHOOK_SECRET }}
+          GHAPP_ORG_PRIVATE_KEY: ${{ secrets.GHAPP_ORG_PRIVATE_KEY }}
+          GHAPP_PERSONAL_PRIVATE_KEY: ${{ secrets.GHAPP_PERSONAL_PRIVATE_KEY }}
+          K8S_KUBECONFIG: ${{ secrets.K8S_KUBECONFIG }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
+
+      - name: Health check
+        run: python3 ./bin/check-health.py ${{ env.RELEASE_ENVIRONMENT == 'staging' && '--staging' || '' }}
+
+      - name: Trigger sample workflow
+        if: env.RELEASE_ENVIRONMENT == 'staging'
+        env:
+          GH_TOKEN: ${{ secrets.RISCV_RUNNER_SAMPLE_ACCESS_TOKEN }}
+          GH_REPO: riseproject-dev/riscv-runner-sample
+          GH_WORKFLOW: hello.yml
+        run: |
+          gh workflow run ${GH_WORKFLOW} --repo ${GH_REPO}
+          sleep 5
+          gh run watch $(gh run list --repo ${GH_REPO} --workflow ${GH_WORKFLOW} --limit 1 --json databaseId --jq '.[0].databaseId') --repo ${GH_REPO} --exit-status
