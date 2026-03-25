@@ -199,6 +199,7 @@ def cleanup_pods():
 
 def cleanup_jobs():
     """Clean up old completed job hashes."""
+    return # let's keep all jobs for now, to understand the usage
     active_job_ids = db.get_all_active_job_ids()
     for job_id, data in db.iter_completed_jobs():
         if job_id and job_id not in active_job_ids:
