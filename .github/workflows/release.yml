@@ -15,8 +15,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  REGISTRY: rg.fr-par.scw.cloud
-  IMAGE: funcscwriseriscvrunnerappqdvknz9s/gh-webhook
+  REGISTRY: rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s
+  IMAGE: gh-webhook
   RELEASE_ENVIRONMENT: ${{ (github.ref == 'refs/heads/main' && 'prod') || (github.ref == 'refs/heads/staging' && 'staging') || '' }}
   PROD_URL: https://riseriscvrunnerappqdvknz9s-gh-webhook.functions.fnc.fr-par.scw.cloud
   STAGING_URL: https://riseriscvrunnerappst73ndwr0w-gh-webhook.functions.fnc.fr-par.scw.cloud
@@ -55,7 +55,7 @@ jobs:
       - name: Login to Container Registry
         uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
         with:
-          registry: ${{ env.REGISTRY }}/${{ env.IMAGE }}
+          registry: ${{ env.REGISTRY }}
           username: nologin
           password: ${{ secrets.SCW_SECRET_KEY }}
 

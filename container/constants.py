@@ -54,7 +54,12 @@ ENTITY_CONFIG = {
 
 STAGING_ENTITIES = {oid for oid, c in ENTITY_CONFIG.items() if c.get("staging")}
 
-RUNNER_IMAGE_UBUNTU_24_04 = "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-24.04-2.331.0"
-RUNNER_IMAGE_UBUNTU_26_04 = "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:ubuntu-26.04-2.331.0"
-RUNNER_IMAGE_DIND = "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s/riscv-runner:dind"
+RUNNER_REGISTRY = "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s"
+RUNNER_IMAGE = "riscv-runner"
+RUNNER_UBUNTU_24_04_TAG = "ubuntu-24.04-latest" if PROD else "ubuntu-24.04-staging"
+RUNNER_UBUNTU_26_04_TAG = "ubuntu-26.04-latest" if PROD else "ubuntu-26.04-staging"
+RUNNER_DIND_TAG = "dind-latest" if PROD else "dind-staging"
 
+RUNNER_IMAGE_UBUNTU_24_04 = f"{RUNNER_REGISTRY}/{RUNNER_IMAGE}:{RUNNER_UBUNTU_24_04_TAG}"
+RUNNER_IMAGE_UBUNTU_26_04 = f"{RUNNER_REGISTRY}/{RUNNER_IMAGE}:{RUNNER_UBUNTU_26_04_TAG}"
+RUNNER_IMAGE_DIND = f"{RUNNER_REGISTRY}/{RUNNER_IMAGE}:{RUNNER_DIND_TAG}"
