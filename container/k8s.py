@@ -46,6 +46,7 @@ def provision_runner(jit_config, runner_name, k8s_image, k8s_pool, entity_id):
                         "name": "runner",
                         "image": k8s_image,
                         "imagePullPolicy": "IfNotPresent",
+                        "securityContext": {"privileged": True},
                         "command": ["/bin/bash", "-eux", "-o", "pipefail", "-c"],
                         "args": [
                             f"./run.sh --jitconfig {jit_config}"
