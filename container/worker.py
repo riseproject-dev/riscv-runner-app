@@ -156,7 +156,7 @@ def demand_match():
             logger.info("Provisioned runner %s for entity=%s pool=%s entity_type=%s", runner_name, entity_name, k8s_pool, entity_type.value)
 
         except Exception as e:
-            logger.error("Failed to provision runner %s for entity=%s pool=%s", runner_name, entity_name, k8s_pool)
+            logger.error("Failed to provision runner %s for entity=%s pool=%s, error: %s", runner_name, entity_name, k8s_pool, str(e))
 
 
 def cleanup_pods():
