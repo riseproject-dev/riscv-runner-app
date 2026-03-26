@@ -4,11 +4,11 @@ A GitHub App that listens for `workflow_job` webhooks and provisions ephemeral R
 
 ## Usage
 
-[**RISE RISC-V Runner**](https://github.com/apps/rise-risc-v-runner) is a GitHub App that provides ephemeral RISC-V runners for GitHub Actions workflows.
+[**RISE RISC-V Runners**](https://github.com/apps/rise-risc-v-runners) is a GitHub App that provides ephemeral RISC-V runners for GitHub Actions workflows.
 
 ### Installation
 
-1. Install the app on your organization from https://github.com/apps/rise-risc-v-runner.
+1. Install the app on your organization from https://github.com/apps/rise-risc-v-runners.
 2. Contact the app administrators to have your organization added to the allowlist.
 
 ### Running workflows on RISC-V
