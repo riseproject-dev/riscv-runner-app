@@ -316,9 +316,15 @@ def cmd_reinstall(args):
     os_id = get_os_id()
     print(f"Using OS ID: {os_id}")
 
+    if args.rename_to and len(args.runners) > 1:
+        print("Error: --rename can only be used with a single runner")
+        sys.exit(1)
+
     for runner in args.runners:
+        new_name = args.rename_to or runner
+
         print(f"\n{'='*60}")
-        print(f"Reinstalling runner {runner}")
+        print(f"Reinstalling runner {runner}" + (f" (renaming to {new_name})" if new_name != runner else ""))
         print(f"{'='*60}")
 
         server_id = find_server_by_name(runner)
@@ -329,14 +335,18 @@ def cmd_reinstall(args):
 
         server = BareMetal(server_id)
 
+        if new_name != runner:
+            server.rename(new_name)
+            print(f"Renamed server to {new_name}")
+
         tags = [f"control-plane:{args.control_plane}"]
         server.update_tags(tags)
         print(f"Tags updated: {tags}")
 
-        print(f"Reinstalling OS on {runner}...")
-        server.reinstall(os_id, runner)
+        print(f"Reinstalling OS on {new_name}...")
+        server.reinstall(os_id, new_name)
         server.wait_for_server()
-        print(f"OS reinstalled on {runner}")
+        print(f"OS reinstalled on {new_name}")
 
         try:
             pn = server.get_private_network()
@@ -349,7 +359,7 @@ def cmd_reinstall(args):
 
         ssh = ssh_connect(host=ip, user="ubuntu")
         run_setup(ssh, pn, ssh_cp, cp_private_ip)
-        print(f"Server {runner} provisioned")
+        print(f"Server {new_name} provisioned")
 
 
 def cmd_delete(args):
@@ -383,6 +393,7 @@ def main():
 
     reinstall_parser = subparsers.add_parser("reinstall", help="Reinstall OS on existing runners")
     reinstall_parser.add_argument("runners", nargs="+", type=str, help="Runner to reinstall")
+    reinstall_parser.add_argument("--rename-to", type=str, help="New hostname (only valid with a single runner)")
 
     delete_parser = subparsers.add_parser("delete", help="Delete existing runners")
     delete_parser.add_argument("runners", nargs="+", type=str, help="Runners to delete")

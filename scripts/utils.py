@@ -234,6 +234,9 @@ class BareMetal:
                     return BareMetalPrivateNetwork(ip_info.address, pn.vlan)
         raise ProvisioningException(f"No private IPv4 address found for baremetal server {self.id}")
 
+    def rename(self, name):
+        baremetal_api.update_server(server_id=self.id, name=name)
+
     def update_tags(self, tags):
         baremetal_api.update_server(server_id=self.id, tags=tags)
 
