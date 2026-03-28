@@ -17,14 +17,16 @@ package:
     - "!.git/**"
 
 custom:
+  # deploy environment variables
   staging:
     namespace: rise-riscv-runner-app-staging
     container-tag: "staging"
     prod: "false"
-  prod:
+  main:
     namespace: rise-riscv-runner-app
     container-tag: "latest"
     prod: "true"
+  # containers
   containers:
     gh-webhook:
       registryImage: ${env:REGISTRY}/${env:IMAGE}:${self:custom.${self:provider.stage}.container-tag}

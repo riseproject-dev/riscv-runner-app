@@ -17,11 +17,23 @@ concurrency:
 env:
   REGISTRY: rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s
   IMAGE: gh-webhook
-  RELEASE_ENVIRONMENT: ${{ (github.ref == 'refs/heads/main' && 'prod') || (github.ref == 'refs/heads/staging' && 'staging') || '' }}
   PROD_URL: https://riseriscvrunnerappqdvknz9s-gh-webhook.functions.fnc.fr-par.scw.cloud
   STAGING_URL: https://riseriscvrunnerappst73ndwr0w-gh-webhook.functions.fnc.fr-par.scw.cloud
 
 jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.env.outputs.result }}
+    steps:
+      - id: env
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "result=main" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref }}" == "refs/heads/staging" ]]; then
+            echo "result=staging" >> $GITHUB_OUTPUT
+          fi
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -38,9 +50,10 @@ jobs:
           PYTHONPATH=${{ github.workspace }}/container pytest
 
   deploy:
-    if: github.repository_owner == 'riseproject-dev' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging')
-    needs: test
+    if: github.repository_owner == 'riseproject-dev' && needs.resolve.outputs.environment != ''
+    needs: [test, resolve]
     runs-on: ubuntu-latest
+    environment: ${{ needs.resolve.outputs.environment }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: rlespinasse/github-slug-action@9e7def61550737ba68c62d34a32dd31792e3f429 # v5.5.0
@@ -65,21 +78,19 @@ jobs:
           platforms: linux/amd64
           context: container
           tags: |
-            ${{ github.ref == 'refs/heads/main' && format('{0}/{1}:latest', env.REGISTRY, env.IMAGE) || '' }}
-            ${{ github.ref != 'refs/heads/main' && format('{0}/{1}:{2}', env.REGISTRY, env.IMAGE, env.GITHUB_REF_NAME_SLUG) || '' }}
+            ${{ needs.resolve.outputs.environment == 'main'    && format('{0}/{1}:dind-latest', env.REGISTRY, env.IMAGE) || '' }}
+            ${{ needs.resolve.outputs.environment == 'staging' && format('{0}/{1}:dind-staging', env.REGISTRY, env.IMAGE) || '' }}
           cache-from: |
             type=gha,scope=gh-webhook-main
-            ${{ github.event_name == 'push' && format('type=gha,scope=type=gha,scope=gh-webhook-{0}', env.GITHUB_REF_NAME_SLUG) || '' }}
-            ${{ github.event_name == 'pull_request' && format('type=gha,scope=type=gha,scope=gh-webhook-pr-{0}', github.event.pull_request.number) || '' }}
+            ${{ format('type=gha,scope=type=gha,scope=gh-webhook-{0}', env.GITHUB_REF_NAME_SLUG) }}
           cache-to: |
-            ${{ github.event_name == 'push' && format('type=gha,scope=type=gha,scope=gh-webhook-{0}', env.GITHUB_REF_NAME_SLUG) || '' }}
-            ${{ github.event_name == 'pull_request' && format('type=gha,scope=type=gha,scope=gh-webhook-pr-{0}', github.event.pull_request.number) || '' }}
+            ${{ format('type=gha,scope=type=gha,scope=gh-webhook-{0}', env.GITHUB_REF_NAME_SLUG) }}
           push: true
 
       - run: npm ci
 
       - name: Deploy to Scaleway
-        run: npx serverless@3 deploy --verbose --stage=${{ env.RELEASE_ENVIRONMENT }}
+        run: npx serverless@3 deploy --verbose --stage=${{ needs.resolve.outputs.environment }}
         env:
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
           GHAPP_WEBHOOK_SECRET: ${{ secrets.GHAPP_WEBHOOK_SECRET }}
@@ -89,10 +100,10 @@ jobs:
           REDIS_URL: ${{ secrets.REDIS_URL }}
 
       - name: Health check
-        run: python3 ./bin/check-health.py ${{ env.RELEASE_ENVIRONMENT == 'staging' && '--staging' || '' }}
+        run: python3 ./bin/check-health.py ${{ needs.resolve.outputs.environment == 'staging' && '--staging' || '' }}
 
       - name: Trigger sample workflow
-        if: env.RELEASE_ENVIRONMENT == 'staging'
+        if: needs.resolve.outputs.environment == 'staging'
         env:
           GH_TOKEN: ${{ secrets.RISCV_RUNNER_SAMPLE_ACCESS_TOKEN }}
           GH_REPO: riseproject-dev/riscv-runner-sample

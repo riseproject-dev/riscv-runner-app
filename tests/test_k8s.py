@@ -76,7 +76,7 @@ def test_delete_pod_success(mock_core_v1_api, mock_init_client):
     result = delete_pod(mock_pod)
     assert "deleted successfully" in result
     mock_api_instance.delete_namespaced_pod.assert_called_once_with(
-        name="runner-1", namespace="staging"
+        name="runner-1", namespace="default"
     )
 
 
