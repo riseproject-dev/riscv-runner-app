@@ -237,7 +237,7 @@ def find_server_by_name(hostname):
 
 def drain_and_delete_k8s_node(hostname, ssh_cp):
     ssh_cp.run(
-        f"kubectl --kubeconfig=/etc/kubernetes/admin.conf drain {hostname} --ignore-daemonsets --delete-emptydir-data --force",
+        f"kubectl --kubeconfig=/etc/kubernetes/admin.conf drain {hostname} --ignore-daemonsets --delete-emptydir-data --force --timeout=0",
         warn=True,
     )
     ssh_cp.run(
