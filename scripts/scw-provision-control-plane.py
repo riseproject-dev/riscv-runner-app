@@ -41,7 +41,7 @@ write_files:
       - apiVersion: rbac.authorization.k8s.io/v1
         kind: ClusterRoleBinding
         metadata:
-          name: luhenry-admin-binding
+          name: luhenry-cluster-admin-binding
         roleRef:
           apiGroup: rbac.authorization.k8s.io
           kind: ClusterRole
@@ -86,6 +86,19 @@ write_files:
         - apiGroup: rbac.authorization.k8s.io
           kind: User
           name: gh-app
+      # gh-device-plugin-deploy
+      - apiVersion: rbac.authorization.k8s.io/v1
+        kind: ClusterRoleBinding
+        metadata:
+          name: gh-deploy-cluster-admin-binding
+        roleRef:
+          apiGroup: rbac.authorization.k8s.io
+          kind: ClusterRole
+          name: cluster-admin
+        subjects:
+        - apiGroup: rbac.authorization.k8s.io
+          kind: User
+          name: gh-deploy
       kind: List
 
 package_update: true
@@ -159,8 +172,9 @@ runcmd:
 
     # Create user kubeconfigs (these will use the private IP as server address;
     # the script replaces it with the public IP when printing)
-    kubeadm kubeconfig user --client-name=luhenry > /etc/kubernetes/kubeconfig-luhenry.conf
-    kubeadm kubeconfig user --client-name=gh-app > /etc/kubernetes/kubeconfig-gh-app.conf
+    kubeadm kubeconfig user --client-name=luhenry   > /etc/kubernetes/kubeconfig-luhenry.conf
+    kubeadm kubeconfig user --client-name=gh-deploy > /etc/kubernetes/kubeconfig-gh-deploy.conf
+    kubeadm kubeconfig user --client-name=gh-app    > /etc/kubernetes/kubeconfig-gh-app.conf
 
     # Apply cluster roles
     kubectl apply -f /etc/kubernetes/clusterroles.yml
