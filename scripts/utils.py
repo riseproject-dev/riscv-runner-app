@@ -257,6 +257,9 @@ class BareMetal:
             print(f"  server status = {res.status}, server install status = {res.install.status}, {"ready!" if ready else "not ready yet!"}")
             return ready
 
+        time.sleep(5) # there can be a race condition between the previous operation
+                      # and waiting for the server, add an artificial sleep to allow
+                      # scaleway's backend to sync up
         baremetal_api.wait_for_server(
             server_id=self.id,  
             options=WaitForOptions(

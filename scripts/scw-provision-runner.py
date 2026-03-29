@@ -13,6 +13,8 @@ if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
 from utils import *
 from constants import *
 
+from invoke.exceptions import UnexpectedExit
+
 SERVER_TYPE = "EM-RV1-C4M16S128-A"
 
 RETRY_DELAY = 60
@@ -23,7 +25,9 @@ exec > >(sudo tee /var/log/riscv-runner-setup.log) 2>&1
 
 set -euxo pipefail
 
-sudo apt update && sudo apt install -y retry
+# Fresh packages
+sudo apt update -qq
+sudo apt upgrade -qq -y
 
 # Load required kernel modules
 cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
@@ -44,34 +48,35 @@ EOF
 # Apply the changes
 sudo sysctl --system
 
-# Configure private network VLAN interface
-cat <<'EOF' | sudo tee -a /etc/systemd/network/05-end0.network
-[Match]
-Name=end0
-[Network]
-DHCP=yes
-VLAN=end0.@@PN_VLAN_ID@@
-EOF
+# # Configure private network VLAN interface
+# cat <<'EOF' | sudo tee -a /etc/systemd/network/05-end0.network
+# [Match]
+# Name=end0
+# [Network]
+# DHCP=yes
+# VLAN=end0.@@PN_VLAN_ID@@
+# EOF
 
-cat <<'EOF' | sudo tee /etc/systemd/network/10-end0.@@PN_VLAN_ID@@.netdev
-[NetDev]
-Name=end0.@@PN_VLAN_ID@@
-Kind=vlan
-[VLAN]
-Id=@@PN_VLAN_ID@@
-EOF
+# cat <<'EOF' | sudo tee /etc/systemd/network/10-end0.@@PN_VLAN_ID@@.netdev
+# [NetDev]
+# Name=end0.@@PN_VLAN_ID@@
+# Kind=vlan
+# [VLAN]
+# Id=@@PN_VLAN_ID@@
+# EOF
 
-cat <<'EOF' | sudo tee /etc/systemd/network/11-end0.@@PN_VLAN_ID@@.network
-[Match]
-Name=end0.@@PN_VLAN_ID@@
-[Network]
-Address=@@PN_IP@@
-EOF
+# cat <<'EOF' | sudo tee /etc/systemd/network/11-end0.@@PN_VLAN_ID@@.network
+# [Match]
+# Name=end0.@@PN_VLAN_ID@@
+# [Network]
+# Address=@@PN_IP@@
+# EOF
 
-sudo networkctl reload
+# sudo networkctl reload
 
 # Check that it succeeded
-retry --delay=2 --times=5 -- ip addr show end0.@@PN_VLAN_ID@@
+# sudo apt install -qq -y --no-install-recommends retry
+# retry --delay=2 --times=5 -- ip addr show end0.@@PN_VLAN_ID@@
 
 # # Configure private network VLAN interface
 # sudo ip link add link end0 name end0.@@PN_VLAN_ID@@ type vlan id @@PN_VLAN_ID@@
@@ -79,7 +84,7 @@ retry --delay=2 --times=5 -- ip addr show end0.@@PN_VLAN_ID@@
 # sudo ip addr add @@PN_IP@@ dev end0.@@PN_VLAN_ID@@
 
 # Install containerd
-sudo apt update && sudo apt install -y containerd
+sudo apt install -qq -y --no-install-recommends containerd
 sudo mkdir -p /etc/containerd
 containerd config default | sudo tee /etc/containerd/config.toml > /dev/null
 
@@ -93,8 +98,8 @@ sudo sed -i 's|sandbox_image = ".*"|sandbox_image = "cloudv10x/pause:3.10"|' /et
 # 3. Restart the service
 sudo systemctl restart containerd
 
-sudo apt install curl unzip -y
-curl -fSL \
+sudo apt install -qq -y --no-install-recommends curl unzip
+curl -fsSL \
   --retry 5 \
   --retry-delay 5 \
   --retry-all-errors \
@@ -110,7 +115,11 @@ sudo chown root:root /usr/local/bin/kube*
 sudo chmod +x /usr/local/bin/kube*
 
 sudo mkdir -p /opt/cni/bin
-curl -L https://github.com/containernetworking/plugins/releases/download/v1.4.0/cni-plugins-linux-riscv64-v1.4.0.tgz | \
+curl -fsSL \
+  --retry 5 \
+  --retry-delay 5 \
+  --retry-all-errors \
+  https://github.com/containernetworking/plugins/releases/download/v1.4.0/cni-plugins-linux-riscv64-v1.4.0.tgz | \
     sudo tar -C /opt/cni/bin -xvzf -
 
 cat <<'EOF' | sudo tee /etc/systemd/system/kubelet.service
@@ -145,7 +154,9 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl enable --now kubelet
 
+
 # Join the cluster (uses the control plane's private network IP)
+sudo kubeadm reset -f || true
 sudo @@KUBEADM_JOIN_CMD@@
 
 # Mandatory reboot for fresh nodes to finalize networking and cgroups
@@ -200,7 +211,7 @@ def get_os_id():
     raise RuntimeError("Ubuntu 24.04 LTS OS not found")
 
 
-def get_kubeadm_join_cmd(ssh_cp, cp_private_ip):
+def get_kubeadm_join_cmd(ssh_cp, cp_ip):
     # Create a short-lived token
     result = ssh_cp.run("kubeadm token create --ttl 15m", hide=True)
     token = result.stdout.strip()
@@ -215,15 +226,15 @@ def get_kubeadm_join_cmd(ssh_cp, cp_private_ip):
     )
     ca_cert_hash = result.stdout.strip()
 
-    return f"kubeadm join {cp_private_ip}:6443 --token {token} --discovery-token-ca-cert-hash sha256:{ca_cert_hash}"
+    return f"kubeadm join {cp_ip}:6443 --token {token} --discovery-token-ca-cert-hash sha256:{ca_cert_hash}"
 
 
-def run_setup(ssh, pn, ssh_cp, cp_private_ip):
-    assert pn
-    join_cmd = get_kubeadm_join_cmd(ssh_cp, cp_private_ip)
+def run_setup(ssh, pn, ssh_cp, cp_public_ip):
+    join_cmd = get_kubeadm_join_cmd(ssh_cp, cp_public_ip)
     script = SETUP_SCRIPT.replace("@@KUBEADM_JOIN_CMD@@", join_cmd) \
-                         .replace("@@PN_IP@@", pn.ip) \
-                         .replace("@@PN_VLAN_ID@@", str(pn.vlan_id))
+                         #FIXME(pn): enable private address again
+                         # .replace("@@PN_IP@@", pn.ip)
+                         # .replace("@@PN_VLAN_ID@@", pn.vlan_id)
     ssh.run(script)
 
 
@@ -243,6 +254,23 @@ def drain_and_delete_k8s_node(hostname, ssh_cp):
     ssh_cp.run(
         f"kubectl --kubeconfig=/etc/kubernetes/admin.conf delete node {hostname} --ignore-not-found",
     )
+
+
+def wait_for_k8s_node(hostname, ssh_cp):
+    while True:
+        try:
+            result = ssh_cp.run(f"kubectl --kubeconfig=/etc/kubernetes/admin.conf get node {hostname} --no-headers -o name", hide='both')
+            assert result.exited == 0
+            print(f"  node {hostname} available but not ready yet!")
+            break
+        except UnexpectedExit:
+            print(f"  node {hostname} not available yet!")
+            time.sleep(15)
+
+    ssh_cp.run(
+        f"kubectl --kubeconfig=/etc/kubernetes/admin.conf wait --for=condition=Ready node/{hostname} --timeout=600s", hide='out'
+    )
+    print(f"  node {hostname} available and ready!")
 
 
 def create_server(hostname, os_id, tags=None):
@@ -294,8 +322,10 @@ def cmd_create(args):
         server.wait_for_server()
         print(f"Server created: {server.id}")
 
-        pn = server.attach_private_network()
-        print(f"Private network enabled (VLAN {pn.vlan_id}, IP {pn.ip})")
+        #FIXME(pn): Disable private network for now, it doesn't work reliably enough
+        # pn = server.attach_private_network()
+        # print(f"Private network enabled (VLAN {pn.vlan_id}, IP {pn.ip})")
+        pn = None
 
         print(f"Starting {runner}...")
         server.start()
@@ -304,7 +334,11 @@ def cmd_create(args):
         print(f"Server IP: {ip}")
 
         ssh = ssh_connect(host=ip, user="ubuntu")
-        run_setup(ssh, pn, ssh_cp, cp_private_ip)
+        run_setup(ssh, pn, ssh_cp, cp_public_ip)
+
+        print(f"Waiting for node {runner} to be ready in k8s")
+        wait_for_k8s_node(runner, ssh_cp)
+
         print(f"Server {runner} provisioned")
 
 
@@ -316,12 +350,12 @@ def cmd_reinstall(args):
     os_id = get_os_id()
     print(f"Using OS ID: {os_id}")
 
-    if args.rename_to and len(args.runners) > 1:
-        print("Error: --rename can only be used with a single runner")
-        sys.exit(1)
-
     for runner in args.runners:
-        new_name = args.rename_to or runner
+        if args.rename:
+            index = get_next_runner_index()
+            new_name = f"riscv-runner-{index}"
+        else:
+            new_name = runner
 
         print(f"\n{'='*60}")
         print(f"Reinstalling runner {runner}" + (f" (renaming to {new_name})" if new_name != runner else ""))
@@ -330,8 +364,9 @@ def cmd_reinstall(args):
         server_id = find_server_by_name(runner)
         print(f"Found existing server: {server_id}")
 
+        print(f"Draining and removing {runner} from k8s")
         drain_and_delete_k8s_node(runner, ssh_cp)
-        print("Drained and removed from Kubernetes cluster")
+        print(f"Drained and removed {runner} from k8s")
 
         server = BareMetal(server_id)
 
@@ -348,18 +383,47 @@ def cmd_reinstall(args):
         server.wait_for_server()
         print(f"OS reinstalled on {new_name}")
 
-        try:
-            pn = server.get_private_network()
-        except ProvisioningException:
-            pn = server.attach_private_network()
-        print(f"Private IP: {pn.ip}, vlan={pn.vlan_id}")
+        #FIXME(pn): Disable private network for now, it doesn't work reliably enough
+        # try:
+        #     pn = server.get_private_network()
+        # except ProvisioningException:
+        #     pn = server.attach_private_network()
+        # print(f"Private IP: {pn.ip}, vlan={pn.vlan_id}")
+        pn = None
 
         ip = server.get_public_ip()
         print(f"Public IP: {ip}")
 
         ssh = ssh_connect(host=ip, user="ubuntu")
-        run_setup(ssh, pn, ssh_cp, cp_private_ip)
+        run_setup(ssh, pn, ssh_cp, cp_public_ip)
+
+        print(f"Waiting for node {new_name} to be ready on k8s")
+        wait_for_k8s_node(new_name, ssh_cp)
+
         print(f"Server {new_name} provisioned")
+
+
+def cmd_list(args):
+    tag = f"control-plane:{args.control_plane}"
+    servers = baremetal_api.list_servers_all(tags=[tag])
+
+    rows = []
+    for s in servers:
+        install_status = s.install.status if s.install else "unknown"
+        tags = ",".join(s.tags)
+        rows.append((s.id, s.name, s.status, install_status, tags, s.ping_status))
+
+    # Compute column widths
+    headers = ("ID", "NAME", "STATUS", "INSTALL", "TAGS", "PING")
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for i, val in enumerate(row):
+            widths[i] = max(widths[i], len(str(val)))
+
+    fmt = "  ".join(f"{{:<{w}}}" for w in widths)
+    print(fmt.format(*headers))
+    for row in rows:
+        print(fmt.format(*[str(v) for v in row]))
 
 
 def cmd_delete(args):
@@ -375,8 +439,9 @@ def cmd_delete(args):
         server_id = find_server_by_name(runner)
         print(f"Found server: {server_id}")
 
+        print(f"Draining and removing {runner} from k8s")
         drain_and_delete_k8s_node(runner, ssh_cp)
-        print("Drained and removed from Kubernetes cluster")
+        print(f"Drained and removed {runner} from k8s")
 
         server = BareMetal(server_id)
         server.delete()
@@ -391,16 +456,20 @@ def main():
     create_parser = subparsers.add_parser("create", help="Create new runners")
     create_parser.add_argument("count", nargs="?", type=int, default=1, help="Number of new runners to create")
 
+    subparsers.add_parser("list", help="List runners")
+
     reinstall_parser = subparsers.add_parser("reinstall", help="Reinstall OS on existing runners")
     reinstall_parser.add_argument("runners", nargs="+", type=str, help="Runner to reinstall")
-    reinstall_parser.add_argument("--rename-to", type=str, help="New hostname (only valid with a single runner)")
+    reinstall_parser.add_argument("--rename", action="store_true", help="Rename the runner")
 
     delete_parser = subparsers.add_parser("delete", help="Delete existing runners")
     delete_parser.add_argument("runners", nargs="+", type=str, help="Runners to delete")
 
     args = parser.parse_args()
 
-    if args.command == "create":
+    if args.command == "list":
+        cmd_list(args)
+    elif args.command == "create":
         cmd_create(args)
     elif args.command == "reinstall":
         cmd_reinstall(args)
