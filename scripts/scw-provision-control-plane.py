@@ -86,7 +86,7 @@ write_files:
         - apiGroup: rbac.authorization.k8s.io
           kind: User
           name: gh-app
-      # gh-device-plugin-deploy
+      # gh-deploy
       - apiVersion: rbac.authorization.k8s.io/v1
         kind: ClusterRoleBinding
         metadata:
@@ -146,7 +146,7 @@ runcmd:
     set -eux
 
     # Discover IPs from the Scaleway metadata service
-    METADATA=$(curl -s http://169.254.42.42/conf?format=json)
+    METADATA=$(curl -fsSL http://169.254.42.42/conf?format=json)
     PUBLIC_IP=$(echo "${METADATA}" | jq -r '.public_ip.address')
 
     # Get the private NIC MAC address, find the matching interface, extract its IP
@@ -159,8 +159,8 @@ runcmd:
 
     kubeadm init \
       --pod-network-cidr=10.244.0.0/16 \
-      --apiserver-advertise-address="${PRIVATE_IP}" \
-      --apiserver-cert-extra-sans="${PUBLIC_IP}"
+      --apiserver-advertise-address="${PUBLIC_IP}" \
+      --apiserver-cert-extra-sans="${PRIVATE_IP}"
 
     export KUBECONFIG=/etc/kubernetes/admin.conf
 
@@ -176,12 +176,17 @@ runcmd:
     kubeadm kubeconfig user --client-name=gh-deploy > /etc/kubernetes/kubeconfig-gh-deploy.conf
     kubeadm kubeconfig user --client-name=gh-app    > /etc/kubernetes/kubeconfig-gh-app.conf
 
+    echo "run the following commands to update GH:"
+    echo "(set -o pipefail; ssh root@${PUBLIC_IP} cat /etc/kubernetes/kubeconfig-gh-deploy.conf | gh secret set K8S_KUBECONFIG --repo riseproject-dev/riscv-runner-images --env @@ENVIRONMENT@@)"
+    echo "(set -o pipefail; ssh root@${PUBLIC_IP} cat /etc/kubernetes/kubeconfig-gh-deploy.conf | gh secret set K8S_KUBECONFIG --repo riseproject-dev/riscv-runner-device-plugin --env @@ENVIRONMENT@@)"
+    echo "(set -o pipefail; ssh root@${PUBLIC_IP} cat /etc/kubernetes/kubeconfig-gh-app.conf | gh secret set K8S_KUBECONFIG --repo riseproject-dev/riscv-runner-app --env @@ENVIRONMENT@@)"
+
     # Apply cluster roles
     kubectl apply -f /etc/kubernetes/clusterroles.yml
 
     # Apply device plugin DaemonSets
-    kubectl apply -f https://raw.githubusercontent.com/riseproject-dev/riscv-runner-device-plugin/refs/heads/@@DEVICE_PLUGIN_BRANCH@@/k8s-ds-device-plugin.yaml
-    kubectl apply -f https://raw.githubusercontent.com/riseproject-dev/riscv-runner-device-plugin/refs/heads/@@DEVICE_PLUGIN_BRANCH@@/k8s-ds-node-labeller.yaml
+    kubectl apply -f https://raw.githubusercontent.com/riseproject-dev/riscv-runner-device-plugin/refs/heads/@@ENVIRONMENT@@/k8s-ds-device-plugin.yaml
+    kubectl apply -f https://raw.githubusercontent.com/riseproject-dev/riscv-runner-device-plugin/refs/heads/@@ENVIRONMENT@@/k8s-ds-node-labeller.yaml
 """
 
 
@@ -209,7 +214,7 @@ def cmd_create(args):
     print(f"Creating control plane {hostname}")
     print(f"{'='*60}")
 
-    cloud_init = CLOUD_INIT.replace("@@DEVICE_PLUGIN_BRANCH@@", "staging" if staging else "main")
+    cloud_init = CLOUD_INIT.replace("@@ENVIRONMENT@@", "staging" if staging else "main")
 
     server = Instance.create(hostname, SERVER_TYPE, BLOCK_STORAGE_SIZE, cloud_init)
     print(f"Server created: {server.id}")
@@ -237,19 +242,19 @@ def cmd_create(args):
     print("Kubeconfig for luhenry:")
     print(f"{'='*60}")
     result = ssh.run("cat /etc/kubernetes/kubeconfig-luhenry.conf", hide=True)
-    if private_ip:
-        print(result.stdout.replace(private_ip, public_ip))
-    else:
-        print(result.stdout)
+    print(result.stdout)
 
     print(f"\n{'='*60}")
     print("Kubeconfig for gh-app:")
     print(f"{'='*60}")
     result = ssh.run("cat /etc/kubernetes/kubeconfig-gh-app.conf", hide=True)
-    if private_ip:
-        print(result.stdout.replace(private_ip, public_ip))
-    else:
-        print(result.stdout)
+    print(result.stdout)
+
+    print(f"\n{'='*60}")
+    print("Kubeconfig for gh-deploy:")
+    print(f"{'='*60}")
+    result = ssh.run("cat /etc/kubernetes/kubeconfig-gh-deploy.conf", hide=True)
+    print(result.stdout)
 
     print(f"\n{'='*60}")
     print(f"Control plane {hostname} provisioned successfully")
