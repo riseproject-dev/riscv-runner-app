@@ -78,8 +78,8 @@ jobs:
           platforms: linux/amd64
           context: container
           tags: |
-            ${{ needs.resolve.outputs.environment == 'main'    && format('{0}/{1}:dind-latest', env.REGISTRY, env.IMAGE) || '' }}
-            ${{ needs.resolve.outputs.environment == 'staging' && format('{0}/{1}:dind-staging', env.REGISTRY, env.IMAGE) || '' }}
+            ${{ needs.resolve.outputs.environment == 'main'    && format('{0}/{1}:latest', env.REGISTRY, env.IMAGE) || '' }}
+            ${{ needs.resolve.outputs.environment == 'staging' && format('{0}/{1}:staging', env.REGISTRY, env.IMAGE) || '' }}
           cache-from: |
             type=gha,scope=gh-webhook-main
             ${{ format('type=gha,scope=type=gha,scope=gh-webhook-{0}', env.GITHUB_REF_NAME_SLUG) }}
