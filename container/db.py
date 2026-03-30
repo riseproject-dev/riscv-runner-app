@@ -189,7 +189,7 @@ def get_all_active_job_ids():
 
 
 def get_pool_usage():
-    """Return detailed usage: {(entity_id, pool): {entity_name, jobs: [{job_id, status, repo}], workers: [name]}}."""
+    """Return detailed usage: {(entity_id, pool): {entity_name, jobs: [{k8s_pool, job_id, status, repo_full_name, html_url, created_at}], workers: [name]}}."""
     r = _init_client()
     result = {}
     for key in r.scan_iter(match=f"{ENV_PREFIX}:pool:*:jobs"):
@@ -203,9 +203,12 @@ def get_pool_usage():
             if data:
                 entity_name = data.get("entity_name") or data.get("org_name") or entity_name  # migration fallback
                 jobs.append({
+                    "k8s_pool": k8s_pool,
                     "job_id": jid,
                     "status": data.get("status", "unknown"),
+                    "repo_full_name": data.get("repo_full_name", ""),
                     "html_url": data.get("html_url", ""),
+                    "created_at": data.get("created_at", ""),
                 })
         workers = list(r.smembers(_pool_workers_key(entity_id, k8s_pool)))
         result[(entity_id, k8s_pool)] = {"entity_name": entity_name, "jobs": jobs, "workers": workers}
