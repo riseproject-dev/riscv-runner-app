@@ -241,32 +241,24 @@ def history():
     # Sort by created_at descending (newest first)
     jobs.sort(key=lambda j: float(j.get("created_at", 0)), reverse=True)
 
-    # Group by (entity_name, k8s_pool)
-    grouped = {}
+    status_style = {"pending": "#d97706", "running": "#2563eb", "completed": "#16a34a"}
+    lines = []
     for job in jobs:
         entity_name = job.get("entity_name") or job.get("org_name") or job.get("entity_id", "unknown") # migration fallback
         k8s_pool = job.get("k8s_pool", "unknown")
-        grouped.setdefault((entity_name, k8s_pool), []).append(job)
-
-    lines = []
-    for (entity_name, k8s_pool), pool_jobs in sorted(grouped.items()):
-        lines.append(f"=== {entity_name} / {k8s_pool} ({len(pool_jobs)} jobs) ===")
-        status_style = {"pending": "#d97706", "running": "#2563eb", "completed": "#16a34a"}
-        for job in pool_jobs:
-            status = job.get("status", "unknown")
-            job_id = job.get("job_id", "?")
-            repo = job.get("repo_full_name", "")
-            html_url = job.get("html_url", "")
-            created_at = job.get("created_at", "")
-            if created_at:
-                ts = datetime.datetime.fromtimestamp(float(created_at), tz=datetime.timezone.utc)
-                created_str = ts.strftime("%Y-%m-%d %H:%M:%S UTC")
-            else:
-                created_str = "?"
-            color = status_style.get(status, "#666")
-            link = f'<a href="{html_url}">{repo}</a>' if html_url else repo
-            lines.append(f'  <span style="color:{color}">[{status:9s}]</span>  {created_str}  {link}  (job {job_id})')
-        lines.append("")
+        status = job.get("status", "unknown")
+        job_id = job.get("job_id", "?")
+        repo = job.get("repo_full_name", "")
+        html_url = job.get("html_url", "")
+        created_at = job.get("created_at", "")
+        if created_at:
+            ts = datetime.datetime.fromtimestamp(float(created_at), tz=datetime.timezone.utc)
+            created_str = ts.strftime("%Y-%m-%d %H:%M:%S UTC")
+        else:
+            created_str = "?"
+        color = status_style.get(status, "#666")
+        link = f'<a href="{html_url}">{repo}#{job_id}</a>' if html_url else f"{repo}#{job_id}"
+        lines.append(f'<span style="color:{color}">[{status:9s}]</span>  {created_str}  {entity_name}/{k8s_pool}  {link}')
 
     if not lines:
         lines.append("No jobs found.")
