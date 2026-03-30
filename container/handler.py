@@ -231,7 +231,7 @@ def usage():
         lines.append("")
     if not lines:
         lines.append("No active pools.")
-    return make_response("<pre>%s</pre>" % ("\n".join(lines)), 200, {"Content-Type": "text/html"})
+    return make_response(f"<title>{"Usage - Prod" if PROD else "Usage - Staging"}</title><pre>%s</pre>" % ("\n".join(lines)), 200, {"Content-Type": "text/html"})
 
 
 @app.route("/history", methods=['GET'])
@@ -263,7 +263,7 @@ def history():
     if not lines:
         lines.append("No jobs found.")
 
-    return make_response("<pre>%s</pre>" % "\n".join(lines), 200, {"Content-Type": "text/html"})
+    return make_response(f"<title>{"History - Prod" if PROD else "History - Staging"}</title><pre>%s</pre>" % "\n".join(lines), 200, {"Content-Type": "text/html"})
 
 
 @app.route("/", methods=['POST'])
