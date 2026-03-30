@@ -31,8 +31,8 @@ custom:
     gh-webhook:
       registryImage: ${env:REGISTRY}/${env:IMAGE}:${self:custom.${self:provider.stage}.container-tag}
       port: 8080
-      memoryLimit: 256
-      cpuLimit: 100
+      cpuLimit: 500
+      memoryLimit: 512
       secret:
         GHAPP_WEBHOOK_SECRET: ${env:GHAPP_WEBHOOK_SECRET}
         GHAPP_ORG_PRIVATE_KEY: ${env:GHAPP_ORG_PRIVATE_KEY}
