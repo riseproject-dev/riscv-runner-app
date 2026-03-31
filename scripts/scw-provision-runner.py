@@ -88,16 +88,26 @@ sudo apt install -qq -y --no-install-recommends containerd
 sudo mkdir -p /etc/containerd
 containerd config default | sudo tee /etc/containerd/config.toml > /dev/null
 
-# 1. Enable SystemdCgroup driver
+## Enable SystemdCgroup driver
 sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/config.toml
 
-# 2. Set the multi-arch (amd64/riscv64) compatible pause image
-# This ensures that both architectures can pull a valid sandbox image
+## Set the multi-arch (amd64/riscv64) compatible pause image
+## This ensures that both architectures can pull a valid sandbox image
 sudo sed -i 's|sandbox_image = ".*"|sandbox_image = "cloudv10x/pause:3.10"|' /etc/containerd/config.toml
 
-# 3. Restart the service
+## Restart the service
 sudo systemctl restart containerd
 
+# Install crictl
+CRICTL_VERSION="v1.35.0" # https://github.com/kubernetes-sigs/cri-tools/releases/tag/v1.35.0
+curl -fsSL \
+  --retry 5 \
+  --retry-delay 5 \
+  --retry-all-errors
+  https://github.com/kubernetes-sigs/cri-tools/releases/download/${CRICTL_VERSION}/crictl-${CRICTL_VERSION}-linux-$(uname -m).tar.gz | \
+    sudo tar -C /usr/local/bin -xvzf -
+
+# Install kubernetes cli tools: kubeadm, kubelet, kubectl
 sudo apt install -qq -y --no-install-recommends curl unzip
 curl -fsSL \
   --retry 5 \
@@ -114,6 +124,7 @@ rm -rf artifacts artifacts.zip
 sudo chown root:root /usr/local/bin/kube*
 sudo chmod +x /usr/local/bin/kube*
 
+# Install CNI plugins
 sudo mkdir -p /opt/cni/bin
 curl -fsSL \
   --retry 5 \
@@ -122,6 +133,7 @@ curl -fsSL \
   https://github.com/containernetworking/plugins/releases/download/v1.4.0/cni-plugins-linux-riscv64-v1.4.0.tgz | \
     sudo tar -C /opt/cni/bin -xvzf -
 
+# Setup kubelet systemd service
 cat <<'EOF' | sudo tee /etc/systemd/system/kubelet.service
 [Unit]
 Description=kubelet: The Kubernetes Node Agent
@@ -153,7 +165,6 @@ EOF
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now kubelet
-
 
 # Join the cluster (uses the control plane's private network IP)
 sudo kubeadm reset -f || true
