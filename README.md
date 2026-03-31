@@ -42,37 +42,43 @@ Available platform labels:
 
 ## Architecture
 
-The app uses a **demand matching** model: on one side, workflow_jobs create demand for runners; on the other, k8s workers provide supply. The background worker scales supply to match demand per (entity, k8s_pool) pool, with configurable limits.
+The app uses a **demand matching** model: on one side, workflow_jobs create demand for runners; on the other, k8s workers provide supply. The scheduler scales supply to match demand per (entity, k8s_pool) pool, with configurable limits.
 
 Two GitHub Apps are used: one for organizations (org-scoped runners with runner groups) and one for personal accounts (repo-scoped runners). The `entity_id` abstracts over both: it is `org_id` for organizations or `repo_id` for personal accounts.
 
 Jobs and workers are not directly linked -- the only relationship is through the entity. GitHub makes no direct job-to-runner link; a runner is attached to an org or repo, and the job runs inside that context.
 
+The system is split into two containers:
+- **gh-webhook** receives GitHub webhooks, validates them, and writes job state to Redis. It makes no GitHub API or k8s calls.
+- **scheduler** reads job state from Redis, provisions runner pods on k8s, reconciles with GitHub, and cleans up completed pods.
+
 ```
 GitHub (workflow_job webhook)
   |
   v
-Webhook Handler (handler.py)
+gh-webhook (gh_webhook.py)
   |  - Proxies webhooks to staging for staging entities (prod only)
   |  - Verifies webhook signature
   |  - Validates labels, determines entity type (org or personal)
   |  - Resolves (entity_id, labels) -> (k8s_pool, k8s_image)
-  |  - Writes job to Redis
-  |  - Serves /usage (per-pool jobs and workers)
+  |  - Writes job to Redis, publishes queue_event
+  |  - Serves /usage, /history
   |  - NO GitHub API calls, NO k8s calls
   |
   v
 Redis (demand + supply state)
   |  - Job hashes: per-job metadata (pending state derived from status field)
   |  - Pool sets: jobs (demand) and workers (supply) per (entity, k8s_pool)
+  |  - queue_event pubsub channel: wakes scheduler on new jobs
   |
   v
-Background Worker (worker.py)
+Scheduler (scheduler.py)
   |  - GH reconciliation: sync Redis with GitHub job status
   |  - Pod cleanup: delete Succeeded/Failed pods, remove from worker sets
   |  - Job cleanup: remove completed job hashes older than 15 days
   |  - Demand matching: provision runners where demand > supply
   |  - State logging: log per-pool job/worker counts
+  |  - Woken by Redis pubsub or 15s timeout
   |
   v
 Kubernetes (runner pods)
@@ -81,19 +87,19 @@ Kubernetes (runner pods)
 ### Sequence: Queued webhook
 
 ```
-GitHub -> Handler: workflow_job (action=queued)
-Handler: validate signature, labels, entity type
-Handler: match_labels_to_k8s(labels) -> (k8s_pool, k8s_image)
-Handler -> Redis: store_job() -> job hash + pool:jobs
-Handler: notify queue_event (wake worker)
-Handler -> GitHub: 200 OK
+GitHub -> gh-webhook: workflow_job (action=queued)
+gh-webhook: validate signature, labels, entity type
+gh-webhook: match_labels_to_k8s(labels) -> (k8s_pool, k8s_image)
+gh-webhook -> Redis: store_job() -> job hash + pool:jobs + publish queue_event
+gh-webhook -> GitHub: 200 OK
 ```
 
-### Sequence: Worker provisioning
+### Sequence: Scheduler provisioning
 
 ```
-Worker: get_pending_jobs() from pool job sets (filter status=pending, sort by created_at)
-Worker: for each pending job:
+Scheduler: woken by queue_event (or 15s timeout)
+Scheduler: get_pending_jobs() from pool job sets (filter status=pending, sort by created_at)
+Scheduler: for each pending job:
   - get_pool_demand(entity_id, k8s_pool) -> (jobs, workers)
   - if jobs <= workers: skip (demand met)
   - if entity total workers >= max_workers: skip
@@ -109,20 +115,20 @@ Worker: for each pending job:
 ### Sequence: In-progress webhook
 
 ```
-GitHub -> Handler: workflow_job (action=in_progress)
-Handler -> Redis: update_job_running(job_id)
+GitHub -> gh-webhook: workflow_job (action=in_progress)
+gh-webhook -> Redis: update_job_running(job_id)
   - Update hash status=running
-Handler -> GitHub: 200 OK
+gh-webhook -> GitHub: 200 OK
 ```
 
 ### Sequence: Completed webhook
 
 ```
-GitHub -> Handler: workflow_job (action=completed)
-Handler -> Redis: update_job_completed(job_id)
+GitHub -> gh-webhook: workflow_job (action=completed)
+gh-webhook -> Redis: update_job_completed(job_id)
   - SREM from pool:jobs
   - Update hash status=completed
-Handler -> GitHub: 200 OK
+gh-webhook -> GitHub: 200 OK
 ```
 
 ### Sequence: Cancellation
@@ -147,10 +153,10 @@ queued webhook      in_progress webhook     completed webhook
 ### Worker lifecycle
 
 ```
-Pod created by worker -> Running -> Succeeded (job done) / Failed (error)
-                                         |
-                                    cleanup_pods() deletes pod,
-                                    removes from pool:workers
+Pod created by scheduler -> Running -> Succeeded (job done) / Failed (error)
+                                              |
+                                         cleanup_pods() deletes pod,
+                                         removes from pool:workers
 ```
 
 ### Redis schema
@@ -162,6 +168,7 @@ All keys are prefixed with `prod:` or `staging:` depending on environment.
 | `{env}:job:{job_id}` | HASH | job data | Per-job metadata |
 | `{env}:pool:{entity_id}:{k8s_pool}:jobs` | SET | job_ids | Demand: pending+running jobs for this pool |
 | `{env}:pool:{entity_id}:{k8s_pool}:workers` | SET | pod_names | Supply: provisioned pods for this pool |
+| `{env}:queue_event` | PUBSUB | job_id | Wakes the scheduler when a new job is stored |
 
 `entity_id` is `org_id` for organizations, or `repo_id` for personal accounts.
 
@@ -175,7 +182,7 @@ supply  = SCARD(pool:{entity_id}:{k8s_pool}:workers)   # provisioned pods
 deficit = demand - supply
 ```
 
-The worker iterates pending jobs in FIFO order. For each job:
+The scheduler iterates pending jobs in FIFO order. For each job:
 1. If `demand <= supply` for its pool: skip (demand already met)
 2. If entity's total workers across all pools >= `max_workers`: skip
 3. If no k8s node capacity for the pool's node selector: skip
@@ -188,42 +195,50 @@ Per-entity configuration is defined in `ENTITY_CONFIG` in `constants.py`, keyed 
 | Field | Type | Description |
 |-------|------|-------------|
 | `max_workers` | int or None | Maximum concurrent workers across all pools. None = unlimited |
-| `pre_allocated` | int | Reserved for future use |
 | `staging` | bool | If true, webhooks are proxied from prod to staging |
 
 ### HTTP routes
+
+**gh-webhook:**
 
 | Route | Method | Description |
 |-------|--------|-------------|
 | `/` | POST | Webhook endpoint for `workflow_job` events |
 | `/health` | GET | Health check (returns `ok`) |
 | `/usage` | GET | Human-readable view of per-pool jobs and workers |
-| `/history` | GET | Job history grouped by entity/pool, sorted by creation time |
+| `/history` | GET | Job history sorted by status (pending, running, completed) then creation time |
+
+**scheduler:**
+
+| Route | Method | Description |
+|-------|--------|-------------|
+| `/health` | GET | Health check (returns `ok`) |
 
 ### Key files
 
 | File | Purpose |
 |------|---------|
-| `container/constants.py` | Environment configuration, entity config |
-| `container/handler.py` | Flask webhook handler -- validates requests, writes to Redis |
-| `container/worker.py` | Background worker -- GH reconciliation, demand matching, cleanup |
+| `container/constants.py` | Environment configuration, entity config, image tags |
+| `container/gh_webhook.py` | Flask webhook handler -- validates requests, writes to Redis |
+| `container/scheduler.py` | Scheduler -- GH reconciliation, demand matching, cleanup |
 | `container/k8s.py` | Kubernetes pod provisioning, deletion, capacity checks |
-| `container/db.py` | Redis pool-based operations |
+| `container/db.py` | Redis pool-based operations and pubsub |
 | `container/github.py` | GitHub API functions (auth, runner groups, JIT config, job status) |
-| `container/serve.py` | Entry point -- starts worker thread and Flask server |
-| `container/Dockerfile` | Docker image for the Scaleway Container |
+| `container/Dockerfile.gh_webhook` | Docker image for the gh-webhook container |
+| `container/Dockerfile.scheduler` | Docker image for the scheduler container |
 
 ### Infrastructure
 
 | Service | Product | Purpose |
 |---------|---------|---------|
-| App container | Scaleway Container | Webhook handler + background worker (always-on) |
-| Job queue | Scaleway Managed Redis | Demand/supply state store |
-| Runner pods | Self-hosted k8s cluster | Ephemeral RISC-V runner pods |
+| gh-webhook | Scaleway Container | Receives webhooks, writes job state to Redis |
+| scheduler | Scaleway Container | Demand matching, pod provisioning, cleanup |
+| State store | Scaleway Managed Redis | Job and worker state, pubsub for scheduler wake |
+| Runner pods | Self-hosted k8s clusters | Ephemeral RISC-V runner pods |
 
-Two containers are deployed:
-- `gh-webhook` (production) - receives webhooks from the live GitHub App
-- `gh-webhook-staging` (staging) - for testing changes before production
+Production and staging each have their own k8s cluster, provisioned via the `scripts/` tooling. Four containers are deployed total:
+- `gh-webhook` + `scheduler` (production, `main` branch)
+- `gh-webhook` + `scheduler` (staging, `staging` branch)
 
 ## Development
 
@@ -244,12 +259,12 @@ Tests mock Redis and Kubernetes -- no live services are required.
 
 ## Deployment
 
-Deployment is handled automatically by GitHub Actions (`.github/workflows/deploy.yml`).
+Deployment is handled automatically by GitHub Actions (`.github/workflows/release.yml`).
 
 ### How it works
 
-1. **Push to `main`** automatically deploys to **production**: runs tests, builds the `:latest` Docker image, pushes it to Scaleway Container Registry, and deploys both containers via `serverless deploy`.
-2. **Push to `staging`** automatically deploys to **staging**: same pipeline but builds the `:staging` image instead. After deploy, it triggers a sample workflow to verify end-to-end.
+1. **Push to `main`** automatically deploys to **production**: runs tests, builds the `gh-webhook` and `scheduler` Docker images, pushes them to Scaleway Container Registry, and deploys via `serverless deploy`.
+2. **Push to `staging`** automatically deploys to **staging**: same pipeline but builds `:staging` tags. After deploy, it triggers a sample workflow to verify end-to-end.
 3. **Manual deploy** via the Actions tab: click "Run workflow", select "staging" or "production".
 
 ### What to expect
@@ -273,25 +288,66 @@ The following secrets must be configured in the repository settings (Settings > 
 | `REDIS_URL` | Redis connection string (e.g. `rediss://default:<password>@<host>:<port>`) |
 | `RISCV_RUNNER_SAMPLE_ACCESS_TOKEN` | PAT for triggering sample workflow on staging deploy |
 
-### Kubernetes RBAC
+## Kubernetes cluster provisioning
 
-The k8s user `gh-app` needs edit access and permission to list cluster nodes for capacity checks:
+Production and staging each have their own k8s cluster on Scaleway, managed via scripts in `scripts/`.
+
+### Provisioning scripts
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/scw-provision-control-plane.py` | Create a k8s control plane instance (Scaleway POP2-2C-8G) with containerd, kubeadm, Flannel CNI, RBAC, and device plugins |
+| `scripts/scw-provision-runner.py` | Create, reinstall, list, or delete bare metal RISC-V runner nodes (Scaleway EM-RV1) |
+| `scripts/constants.py` | Scaleway project ID, zone, private network ID, SSH key IDs |
+| `scripts/utils.py` | Scaleway SDK clients, SSH helpers, BareMetal/Instance wrappers |
+
+### Creating a new cluster from scratch
 
 ```bash
-# Create the gh-app user
-kubeadm kubeconfig user --client-name=gh-app
-# Give the gh-app user edit access
-kubectl create clusterrolebinding gh-app-edit-binding --clusterrole=edit --user=gh-app
-# Give the gh-app user the ability to list nodes
-kubectl create clusterrole gh-app-node-reader --verb=list --resource=nodes
-kubectl create clusterrolebinding gh-app-node-reader --clusterrole=gh-app-node-reader --user=gh-app
+cd scripts
+python3 -m venv .venv-scripts
+source .venv-scripts/bin/activate
+pip3 install -r requirements.txt
+
+# 1. Create the control plane
+## Pass --staging for a staging control-plane
+python scw-provision-control-plane.py create <control-plane-name> [--staging]
+
+# 2. Add runner nodes (creates 3 bare metal RISC-V servers)
+python scw-provision-runner.py --control-plane <control-plane-name> create 3
+
+# 3. Update Github Secrets:
+## Note the `--env main` for the prod environment, use `--env staging` for staging environment
+ssh root@$(scw instance server list zone=fr-par-2 project-id=03a2e06e-e7c1-45a6-9f05-775d813c2e28 -o json | jq -r '.[] | select(.name == "<control-plane-name>") | .public_ip.address') cat /etc/kubernetes/kubeconfig-gh-app.conf | gh secret set K8S_KUBECONFIG --repo riseproject-dev/riscv-runner-app --env main
+ssh root@$(scw instance server list zone=fr-par-2 project-id=03a2e06e-e7c1-45a6-9f05-775d813c2e28 -o json | jq -r '.[] | select(.name == "<control-plane-name>") | .public_ip.address') cat /etc/kubernetes/kubeconfig-gh-deploy.conf | gh secret set K8S_KUBECONFIG --repo riseproject-dev/riscv-runner-images --env main
+ssh root@$(scw instance server list zone=fr-par-2 project-id=03a2e06e-e7c1-45a6-9f05-775d813c2e28 -o json | jq -r '.[] | select(.name == "<control-plane-name>") | .public_ip.address') cat /etc/kubernetes/kubeconfig-gh-deploy.conf | gh secret set K8S_KUBECONFIG --repo riseproject-dev/riscv-runner-device-plugin --env main
 ```
+
+### Managing runners
+
+```bash
+# List runners tagged to a control plane
+python scw-provision-runner.py --control-plane <control-plane-name> list
+
+# Reinstall OS on a runner (wipes and re-joins the cluster)
+python scw-provision-runner.py --control-plane <control-plane-name> reinstall <runner-name>
+
+# Delete runners
+python scw-provision-runner.py --control-plane <control-plane-name> delete <runner-name>
+```
+
+### Kubernetes RBAC
+
+RBAC is configured automatically by the control plane provisioning script. The key users:
+
+- `gh-app` -- used by the scheduler container. Has edit access and node list permission for capacity checks.
+- `gh-deploy` -- used by CI for kubeconfig stored in GitHub Secrets. Has cluster-admin access.
 
 ## Operations
 
 ### Cleanup terminated runner pods
 
-Runner pods are automatically cleaned up by the background worker when pods reach Succeeded/Failed phase. Stale completed job hashes are removed after 15 days.
+Runner pods are automatically cleaned up by the scheduler when pods reach Succeeded/Failed phase. Stale completed job hashes are removed after 15 days.
 
 To manually clean up finished pods:
 
