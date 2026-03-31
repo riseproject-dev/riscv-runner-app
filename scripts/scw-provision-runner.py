@@ -257,7 +257,7 @@ def find_server_by_name(hostname):
     resp = baremetal_api.list_servers(name=hostname)
     for server in resp.servers:
         if server.name == hostname:
-            return server.id
+            return server
     raise RuntimeError(f"Server '{hostname}' not found in project {PROJECT_ID}")
 
 
@@ -317,10 +317,6 @@ def get_next_runner_index():
 
 
 def cmd_create(args):
-    cp_public_ip, cp_private_ip = get_control_plane_host(args.control_plane)
-    print(f"Using control plane: {cp_public_ip} (private: {cp_private_ip})")
-    ssh_cp = ssh_connect(host=cp_public_ip, user="root")
-
     os_id = get_os_id()
     print(f"Using OS ID: {os_id}")
 
@@ -330,6 +326,10 @@ def cmd_create(args):
         print(f"\n{'='*60}")
         print(f"Creating runner {runner}")
         print(f"{'='*60}")
+
+        cp_public_ip, cp_private_ip = get_control_plane_host(args.control_plane)
+        print(f"Using control plane: {cp_public_ip} (private: {cp_private_ip})")
+        ssh_cp = ssh_connect(host=cp_public_ip, user="root")
 
         tags = [f"control-plane:{args.control_plane}"]
         print(f"Provisioning {runner}")
@@ -358,45 +358,37 @@ def cmd_create(args):
 
 
 def cmd_reinstall(args):
-    cp_public_ip, cp_private_ip = get_control_plane_host(args.control_plane)
-    print(f"Using control plane: {cp_public_ip} (private: {cp_private_ip})")
-    ssh_cp = ssh_connect(host=cp_public_ip, user="root")
-
     os_id = get_os_id()
     print(f"Using OS ID: {os_id}")
 
     for runner in args.runners:
-        if args.rename:
-            index = get_next_runner_index()
-            new_name = f"riscv-runner-{index}"
-        else:
-            new_name = runner
-
         print(f"\n{'='*60}")
-        print(f"Reinstalling runner {runner}" + (f" (renaming to {new_name})" if new_name != runner else ""))
+        print(f"Reinstalling runner {runner}")
         print(f"{'='*60}")
 
-        server_id = find_server_by_name(runner)
-        print(f"Found existing server: {server_id}")
+        server = find_server_by_name(runner)
+        print(f"server = {server}")
+        print(f"Found existing server: {server.id}")
+
+        control_plane = next(tag[14:] for tag in server.tags if tag.startswith("control-plane:"))
+        if not control_plane:
+            print(f"Failing to process {runner}: missing 'control-plane:*' tag, tags = [{",".join(server.tags)}]")
+            sys.exit(1)
+
+        cp_public_ip, cp_private_ip = get_control_plane_host(control_plane)
+        print(f"Using control plane: {cp_public_ip} (private: {cp_private_ip})")
+        ssh_cp = ssh_connect(host=cp_public_ip, user="root")
 
         print(f"Draining and removing {runner} from k8s")
         drain_and_delete_k8s_node(runner, ssh_cp)
         print(f"Drained and removed {runner} from k8s")
 
-        server = BareMetal(server_id)
+        server = BareMetal(server.id)
 
-        if new_name != runner:
-            server.rename(new_name)
-            print(f"Renamed server to {new_name}")
-
-        tags = [f"control-plane:{args.control_plane}"]
-        server.update_tags(tags)
-        print(f"Tags updated: {tags}")
-
-        print(f"Reinstalling OS on {new_name}...")
-        server.reinstall(os_id, new_name)
+        print(f"Reinstalling OS on {runner}...")
+        server.reinstall(os_id, runner)
         server.wait_for_server()
-        print(f"OS reinstalled on {new_name}")
+        print(f"OS reinstalled on {runner}")
 
         #FIXME(pn): Disable private network for now, it doesn't work reliably enough
         # try:
@@ -412,10 +404,10 @@ def cmd_reinstall(args):
         ssh = ssh_connect(host=ip, user="ubuntu")
         run_setup(ssh, pn, ssh_cp, cp_public_ip)
 
-        print(f"Waiting for node {new_name} to be ready on k8s")
-        wait_for_k8s_node(new_name, ssh_cp)
+        print(f"Waiting for node {runner} to be ready on k8s")
+        wait_for_k8s_node(runner, ssh_cp)
 
-        print(f"Server {new_name} provisioned")
+        print(f"Server {runner} provisioned")
 
 
 def cmd_list(args):
@@ -442,40 +434,45 @@ def cmd_list(args):
 
 
 def cmd_delete(args):
-    cp_public_ip, cp_private_ip = get_control_plane_host(args.control_plane)
-    print(f"Using control plane: {cp_public_ip} (private: {cp_private_ip})")
-    ssh_cp = ssh_connect(host=cp_public_ip, user="root")
-
     for runner in args.runners:
         print(f"\n{'='*60}")
         print(f"Deleting runner {runner}")
         print(f"{'='*60}")
 
-        server_id = find_server_by_name(runner)
-        print(f"Found server: {server_id}")
+        server = find_server_by_name(runner)
+        print(f"Found server: {server.id}")
+
+        control_plane = next(tag[14:] for tag in server.tags if tag.startswith("control-plane:"))
+        if not control_plane:
+            print(f"Failing to process {runner}: missing 'control-plane:*' tag, tags = [{",".join(server.tags)}]")
+            sys.exit(1)
+
+        cp_public_ip, cp_private_ip = get_control_plane_host(control_plane)
+        print(f"Using control plane: {cp_public_ip} (private: {cp_private_ip})")
+        ssh_cp = ssh_connect(host=cp_public_ip, user="root")
 
         print(f"Draining and removing {runner} from k8s")
         drain_and_delete_k8s_node(runner, ssh_cp)
         print(f"Drained and removed {runner} from k8s")
 
-        server = BareMetal(server_id)
+        server = BareMetal(server.id)
         server.delete()
         print(f"Server {runner} deleted")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Provision RISE RISC-V runners on Scaleway")
-    parser.add_argument("--control-plane", type=str, required=True, help="Name of the control plane instance")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     create_parser = subparsers.add_parser("create", help="Create new runners")
+    create_parser.add_argument("--control-plane", type=str, required=True, help="Name of the control plane instance")
     create_parser.add_argument("count", nargs="?", type=int, default=1, help="Number of new runners to create")
 
-    subparsers.add_parser("list", help="List runners")
+    list_parser = subparsers.add_parser("list", help="List runners")
+    list_parser.add_argument("--control-plane", type=str, required=True, help="Name of the control plane instance")
 
     reinstall_parser = subparsers.add_parser("reinstall", help="Reinstall OS on existing runners")
     reinstall_parser.add_argument("runners", nargs="+", type=str, help="Runner to reinstall")
-    reinstall_parser.add_argument("--rename", action="store_true", help="Rename the runner")
 
     delete_parser = subparsers.add_parser("delete", help="Delete existing runners")
     delete_parser.add_argument("runners", nargs="+", type=str, help="Runners to delete")
