@@ -9,13 +9,16 @@ import traceback
 import db
 import k8s
 import github as gh
-
 from constants import *
+
+from flask import Flask, request, make_response
+
+# Used for /health for now
+app = Flask(__name__)
 
 logger = logging.getLogger(__name__)
 
 POLL_INTERVAL = 15
-
 
 def gh_reconcile():
     """
@@ -216,8 +219,31 @@ def cleanup_jobs():
             logger.debug("Checking completed job %s for cleanup: job still active, skipping", job_id)
 
 
-def worker_loop():
-    """Main worker loop."""
+@app.route("/health", methods=['GET'])
+def health():
+    return "ok"
+
+
+if __name__ == "__main__":
+    # Set the logging level for all loggers to INFO
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(pathname)s:%(lineno)d::%(funcName)s: [%(levelname)s] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+
+    def http_worker():
+        from waitress import serve
+
+        HOST = "0.0.0.0"
+        PORT = 8080
+
+        print(f"Starting server on http://{HOST}:{PORT}")
+        serve(app, host=HOST, port=PORT)
+
+    http_thread = threading.Thread(target=http_worker, daemon=True)
+    http_thread.start()
+
     while True:
         try:
             gh_reconcile()
@@ -228,11 +254,3 @@ def worker_loop():
             logger.error("Worker error: %s\n%s", e, traceback.format_exc())
 
         db.wait_for_job(POLL_INTERVAL)
-
-
-def start_worker():
-    """Start the background worker thread."""
-    thread = threading.Thread(target=worker_loop, daemon=True)
-    thread.start()
-    logger.info("Background worker started")
-    return thread

@@ -3,7 +3,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from constants import EntityType
-from handler import (
+from gh_webhook import (
     WebhookError,
     check_webhook_signature,
     check_webhook_event,
@@ -17,7 +17,7 @@ from handler import (
 # --- Signature verification ---
 
 def test_valid_signature():
-    from handler import app
+    from gh_webhook import app
     body = '{"action":"queued"}'
     expected_signature = compute_signature(body, GHAPP_WEBHOOK_SECRET).hexdigest()
     headers = {"X-Hub-Signature-256": f"sha256={expected_signature}", "X-Github-Event": "workflow_job"}
@@ -29,7 +29,7 @@ def test_valid_signature():
 
 
 def test_invalid_signature():
-    from handler import app
+    from gh_webhook import app
     headers = {"X-Hub-Signature-256": "sha256=invalid", "X-Github-Event": "workflow_job"}
     with app.test_request_context(headers=headers):
         with pytest.raises(WebhookError) as exc:
@@ -38,7 +38,7 @@ def test_invalid_signature():
 
 
 def test_missing_signature():
-    from handler import app
+    from gh_webhook import app
     headers = {"X-Github-Event": "workflow_job"}
     with app.test_request_context(headers=headers):
         with pytest.raises(WebhookError) as exc:
@@ -131,7 +131,7 @@ def test_match_labels_missing_platform():
 @patch("db.store_job", return_value=True)
 def test_webhook_queued_stores_job(mock_store, mock_connect):
     """Test that a queued webhook stores the job in Redis."""
-    from handler import app
+    from gh_webhook import app
 
     payload = {
         "action": "queued",
@@ -170,7 +170,7 @@ def test_webhook_queued_stores_job(mock_store, mock_connect):
 @patch("db.store_job", return_value=True)
 def test_webhook_queued_personal_account(mock_store, mock_connect):
     """Test that a queued webhook from a personal account uses repo_id as entity_id."""
-    from handler import app
+    from gh_webhook import app
 
     payload = {
         "action": "queued",
@@ -209,7 +209,7 @@ def test_webhook_queued_personal_account(mock_store, mock_connect):
 @patch("db.update_job_running", return_value="pending")
 def test_webhook_in_progress(mock_update, mock_connect):
     """Test that an in_progress webhook updates job status."""
-    from handler import app
+    from gh_webhook import app
 
     payload = {
         "action": "in_progress",
@@ -236,7 +236,7 @@ def test_webhook_in_progress(mock_update, mock_connect):
 @patch("db.update_job_completed", return_value="running")
 def test_webhook_completed(mock_complete, mock_connect):
     """Test that a completed webhook marks the job as completed."""
-    from handler import app
+    from gh_webhook import app
 
     payload = {
         "action": "completed",

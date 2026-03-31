@@ -9,6 +9,6 @@ RUN pip3 install --no-cache -r requirements.txt --target .
 ENV PATH="/app/bin:${PATH}"
 ENV PYTHONPATH="/app"
 
-COPY handler.py serve.py k8s.py db.py worker.py constants.py github.py ./
+COPY *.py ./
 
-CMD [ "python3", "serve.py" ]
+CMD [ "python3", "gh_webhook.py" ]

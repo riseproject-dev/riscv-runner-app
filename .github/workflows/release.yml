@@ -16,7 +16,7 @@ concurrency:
 
 env:
   REGISTRY: rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s
-  IMAGE: gh-webhook
+  IMAGE: riscv-runner
   PROD_URL: https://riseriscvrunnerappqdvknz9s-gh-webhook.functions.fnc.fr-par.scw.cloud
   STAGING_URL: https://riseriscvrunnerappst73ndwr0w-gh-webhook.functions.fnc.fr-par.scw.cloud
 
@@ -77,6 +77,7 @@ jobs:
         with:
           platforms: linux/amd64
           context: container
+          file: container/Dockerfile.gh_webhook
           tags: |
             ${{ needs.resolve.outputs.environment == 'main'    && format('{0}/{1}:gh-webhook-latest', env.REGISTRY, env.IMAGE) || '' }}
             ${{ needs.resolve.outputs.environment == 'staging' && format('{0}/{1}:gh-webhook-staging', env.REGISTRY, env.IMAGE) || '' }}
@@ -85,6 +86,22 @@ jobs:
             ${{ format('type=gha,scope=type=gha,scope=gh-webhook-{0}', env.GITHUB_REF_NAME_SLUG) }}
           cache-to: |
             ${{ format('type=gha,scope=type=gha,scope=gh-webhook-{0}', env.GITHUB_REF_NAME_SLUG) }}
+          push: true
+
+      - name: Build scheduler image
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+        with:
+          platforms: linux/amd64
+          context: container
+          file: container/Dockerfile.scheduler
+          tags: |
+            ${{ needs.resolve.outputs.environment == 'main'    && format('{0}/{1}:scheduler-latest', env.REGISTRY, env.IMAGE) || '' }}
+            ${{ needs.resolve.outputs.environment == 'staging' && format('{0}/{1}:scheduler-staging', env.REGISTRY, env.IMAGE) || '' }}
+          cache-from: |
+            type=gha,scope=scheduler-main
+            ${{ format('type=gha,scope=type=gha,scope=scheduler-{0}', env.GITHUB_REF_NAME_SLUG) }}
+          cache-to: |
+            ${{ format('type=gha,scope=type=gha,scope=scheduler-{0}', env.GITHUB_REF_NAME_SLUG) }}
           push: true
 
       - run: npm ci

@@ -2,7 +2,7 @@ import json
 from unittest.mock import patch, MagicMock
 
 from constants import EntityType
-from worker import (
+from scheduler import (
     demand_match,
     cleanup_pods,
     gh_reconcile,
@@ -43,12 +43,12 @@ def make_job(job_id, entity_id="1000", entity_name="test-org", k8s_pool="scw-em-
 
 # --- demand_match tests ---
 
-@patch("worker.db")
-@patch("worker.k8s.has_available_slot", return_value=True)
-@patch("worker.k8s.provision_runner")
-@patch("worker.gh.authenticate_app", return_value="token-123")
-@patch("worker.gh.ensure_runner_group", return_value=42)
-@patch("worker.gh.create_jit_runner_config_org", return_value="jit-config-encoded")
+@patch("scheduler.db")
+@patch("scheduler.k8s.has_available_slot", return_value=True)
+@patch("scheduler.k8s.provision_runner")
+@patch("scheduler.gh.authenticate_app", return_value="token-123")
+@patch("scheduler.gh.ensure_runner_group", return_value=42)
+@patch("scheduler.gh.create_jit_runner_config_org", return_value="jit-config-encoded")
 def test_demand_match_provisions_org_job(mock_jit, mock_group, mock_auth, mock_provision, mock_slot, mock_db):
     """Test that demand_match provisions a pending org job when capacity exists."""
     job = make_job(111)
@@ -66,11 +66,11 @@ def test_demand_match_provisions_org_job(mock_jit, mock_group, mock_auth, mock_p
     mock_db.add_worker.assert_called_once()
 
 
-@patch("worker.db")
-@patch("worker.k8s.has_available_slot", return_value=True)
-@patch("worker.k8s.provision_runner")
-@patch("worker.gh.authenticate_app", return_value="token-123")
-@patch("worker.gh.create_jit_runner_config_repo", return_value="jit-config-repo")
+@patch("scheduler.db")
+@patch("scheduler.k8s.has_available_slot", return_value=True)
+@patch("scheduler.k8s.provision_runner")
+@patch("scheduler.gh.authenticate_app", return_value="token-123")
+@patch("scheduler.gh.create_jit_runner_config_repo", return_value="jit-config-repo")
 def test_demand_match_provisions_personal_job(mock_jit_repo, mock_auth, mock_provision, mock_slot, mock_db):
     """Test that demand_match provisions a pending personal account job (repo-scoped)."""
     job = make_job(222, entity_id="200", entity_name="someuser", entity_type=EntityType.USER,
@@ -91,9 +91,9 @@ def test_demand_match_provisions_personal_job(mock_jit_repo, mock_auth, mock_pro
     mock_db.add_worker.assert_called_once()
 
 
-@patch("worker.db")
-@patch("worker.k8s.has_available_slot", return_value=True)
-@patch("worker.k8s.provision_runner")
+@patch("scheduler.db")
+@patch("scheduler.k8s.has_available_slot", return_value=True)
+@patch("scheduler.k8s.provision_runner")
 def test_demand_match_skips_when_demand_met(mock_provision, mock_slot, mock_db):
     """Test that jobs are skipped when pool demand is already met."""
     job = make_job(111)
@@ -106,9 +106,9 @@ def test_demand_match_skips_when_demand_met(mock_provision, mock_slot, mock_db):
     mock_provision.assert_not_called()
 
 
-@patch("worker.db")
-@patch("worker.k8s.has_available_slot", return_value=False)
-@patch("worker.k8s.provision_runner")
+@patch("scheduler.db")
+@patch("scheduler.k8s.has_available_slot", return_value=False)
+@patch("scheduler.k8s.provision_runner")
 def test_demand_match_skips_no_k8s_capacity(mock_provision, mock_slot, mock_db):
     """Test that jobs are skipped when no k8s capacity."""
     job = make_job(111)
@@ -122,9 +122,9 @@ def test_demand_match_skips_no_k8s_capacity(mock_provision, mock_slot, mock_db):
     mock_provision.assert_not_called()
 
 
-@patch("worker.db")
-@patch("worker.k8s.has_available_slot", return_value=True)
-@patch("worker.k8s.provision_runner")
+@patch("scheduler.db")
+@patch("scheduler.k8s.has_available_slot", return_value=True)
+@patch("scheduler.k8s.provision_runner")
 def test_demand_match_respects_max_workers(mock_provision, mock_slot, mock_db):
     """Test that max_workers cap is respected."""
     job = make_job(111, entity_id="660779", entity_name="luhenry")  # max_workers defaults to 20
@@ -138,12 +138,12 @@ def test_demand_match_respects_max_workers(mock_provision, mock_slot, mock_db):
     mock_provision.assert_not_called()
 
 
-@patch("worker.db")
-@patch("worker.k8s.has_available_slot", return_value=True)
-@patch("worker.k8s.provision_runner", side_effect=Exception("K8s error"))
-@patch("worker.gh.authenticate_app", return_value="token-123")
-@patch("worker.gh.ensure_runner_group", return_value=42)
-@patch("worker.gh.create_jit_runner_config_org", return_value="jit-config")
+@patch("scheduler.db")
+@patch("scheduler.k8s.has_available_slot", return_value=True)
+@patch("scheduler.k8s.provision_runner", side_effect=Exception("K8s error"))
+@patch("scheduler.gh.authenticate_app", return_value="token-123")
+@patch("scheduler.gh.ensure_runner_group", return_value=42)
+@patch("scheduler.gh.create_jit_runner_config_org", return_value="jit-config")
 def test_demand_match_handles_provision_failure(mock_jit, mock_group, mock_auth, mock_provision, mock_slot, mock_db):
     """Test that provisioning failure is handled gracefully."""
     job = make_job(111)
@@ -159,9 +159,9 @@ def test_demand_match_handles_provision_failure(mock_jit, mock_group, mock_auth,
 
 # --- cleanup_pods tests ---
 
-@patch("worker.db")
-@patch("worker.k8s.list_pods")
-@patch("worker.k8s.delete_pod")
+@patch("scheduler.db")
+@patch("scheduler.k8s.list_pods")
+@patch("scheduler.k8s.delete_pod")
 def test_cleanup_deletes_succeeded_pod(mock_delete, mock_list, mock_db):
     """Test that succeeded pods are deleted and removed from worker pool."""
     pod = make_pod("pod-1", phase="Succeeded", entity_id="1000", board="scw-em-rv1")
@@ -175,9 +175,9 @@ def test_cleanup_deletes_succeeded_pod(mock_delete, mock_list, mock_db):
     mock_db.remove_worker.assert_called_once_with("1000", "scw-em-rv1", "pod-1")
 
 
-@patch("worker.db")
-@patch("worker.k8s.list_pods")
-@patch("worker.k8s.delete_pod")
+@patch("scheduler.db")
+@patch("scheduler.k8s.list_pods")
+@patch("scheduler.k8s.delete_pod")
 def test_cleanup_skips_running_pod(mock_delete, mock_list, mock_db):
     """Test that running pods are not deleted."""
     pod = make_pod("pod-1", phase="Running", entity_id="1000", board="scw-em-rv1")
@@ -191,9 +191,9 @@ def test_cleanup_skips_running_pod(mock_delete, mock_list, mock_db):
     mock_db.remove_worker.assert_not_called()
 
 
-@patch("worker.db")
-@patch("worker.k8s.list_pods")
-@patch("worker.k8s.delete_pod", side_effect=Exception("k8s error"))
+@patch("scheduler.db")
+@patch("scheduler.k8s.list_pods")
+@patch("scheduler.k8s.delete_pod", side_effect=Exception("k8s error"))
 def test_cleanup_handles_delete_failure(mock_delete, mock_list, mock_db):
     """Test that delete failure doesn't crash and doesn't remove worker."""
     pod = make_pod("pod-1", phase="Failed", entity_id="1000", board="scw-em-rv1")
@@ -208,9 +208,9 @@ def test_cleanup_handles_delete_failure(mock_delete, mock_list, mock_db):
 
 # --- gh_reconcile tests ---
 
-@patch("worker.db")
-@patch("worker.gh.authenticate_app", return_value="token-123")
-@patch("worker.gh.get_job_status", return_value="completed")
+@patch("scheduler.db")
+@patch("scheduler.gh.authenticate_app", return_value="token-123")
+@patch("scheduler.gh.get_job_status", return_value="completed")
 def test_gh_reconcile_completes_job(mock_status, mock_auth, mock_db):
     """Test that reconciliation marks a job completed when GH says so."""
     job = make_job(111, status="running")
@@ -221,9 +221,9 @@ def test_gh_reconcile_completes_job(mock_status, mock_auth, mock_db):
     mock_db.update_job_completed.assert_called_once_with("111")
 
 
-@patch("worker.db")
-@patch("worker.gh.authenticate_app", return_value="token-123")
-@patch("worker.gh.get_job_status", return_value="in_progress")
+@patch("scheduler.db")
+@patch("scheduler.gh.authenticate_app", return_value="token-123")
+@patch("scheduler.gh.get_job_status", return_value="in_progress")
 def test_gh_reconcile_updates_running(mock_status, mock_auth, mock_db):
     """Test that reconciliation updates pending→running when GH says in_progress."""
     job = make_job(111, status="pending")
@@ -234,7 +234,7 @@ def test_gh_reconcile_updates_running(mock_status, mock_auth, mock_db):
     mock_db.update_job_running.assert_called_once_with("111")
 
 
-@patch("worker.db")
+@patch("scheduler.db")
 def test_gh_reconcile_no_active_jobs(mock_db):
     """Test that reconciliation is a no-op when no active jobs."""
     mock_db.get_all_jobs.return_value = []

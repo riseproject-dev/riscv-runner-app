@@ -358,3 +358,19 @@ def webhook():
 
     else:
         return f"Ignoring {event} event"
+
+if __name__ == "__main__":
+    # Set the logging level for all loggers to INFO
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(pathname)s:%(lineno)d::%(funcName)s: [%(levelname)s] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+
+    from waitress import serve
+
+    HOST = "0.0.0.0"
+    PORT = 8080
+
+    print(f"Starting server on http://{HOST}:{PORT}")
+    serve(app, host=HOST, port=PORT)
