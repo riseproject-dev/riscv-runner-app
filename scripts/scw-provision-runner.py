@@ -21,7 +21,9 @@ RETRY_DELAY = 60
 
 SETUP_SCRIPT = r"""
 # Redirect stdout and stderr to /var/log/riscv-runner-setup.log
-exec > >(sudo tee /var/log/riscv-runner-setup.log) 2>&1
+exec > >(sudo tee -a /var/log/riscv-runner-setup.log) 2>&1
+
+echo "Setup @ $(date)"
 
 set -euxo pipefail
 
@@ -103,7 +105,7 @@ CRICTL_VERSION="v1.35.0" # https://github.com/kubernetes-sigs/cri-tools/releases
 curl -fsSL \
   --retry 5 \
   --retry-delay 5 \
-  --retry-all-errors
+  --retry-all-errors \
   https://github.com/kubernetes-sigs/cri-tools/releases/download/${CRICTL_VERSION}/crictl-${CRICTL_VERSION}-linux-$(uname -m).tar.gz | \
     sudo tar -C /usr/local/bin -xvzf -
 
