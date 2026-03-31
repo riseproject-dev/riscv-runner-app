@@ -10,8 +10,6 @@ from constants import PROD
 
 logger = logging.getLogger(__name__)
 
-queue_event = threading.Condition()
-
 ENV_PREFIX = "prod" if PROD else "staging"
 
 
@@ -21,6 +19,8 @@ def _pool_jobs_key(entity_id, k8s_pool):
     return f"{ENV_PREFIX}:pool:{entity_id}:{k8s_pool}:jobs"
 def _pool_workers_key(entity_id, k8s_pool):
     return f"{ENV_PREFIX}:pool:{entity_id}:{k8s_pool}:workers"
+def _queue_event():
+    return f"{ENV_PREFIX}:queue_event"
 
 
 @functools.lru_cache(maxsize=1)
@@ -59,11 +59,11 @@ def store_job(job_id, entity_id, entity_name, entity_type, repo_full_name, insta
         "created_at": str(now),
     })
     pipe.sadd(_pool_jobs_key(entity_id, k8s_pool), str(job_id))
+    # Wake up worker for new job to handle
+    pipe.publish(_queue_event(), str(job_id))
     pipe.execute()
 
     logger.info("Stored job %s for entity %s pool %s", job_id, entity_name, k8s_pool)
-    with queue_event:
-        queue_event.notify()
     return True
 
 
@@ -244,3 +244,28 @@ def iter_completed_jobs():
             if job_id is None:
                 job_id = key.split(":")[-1]
             yield job_id, data
+
+
+@functools.lru_cache(maxsize=1)
+def _init_queue_event_pubsub():
+    """Create a persistent pubsub subscription for job queue events."""
+    r = _init_client()
+    pubsub = r.pubsub()
+    pubsub.subscribe(_queue_event())
+    return pubsub
+
+
+def wait_for_job(timeout: int):
+    """Block until a new job is published or timeout expires.
+
+    Drains all buffered messages after waking so the worker isn't
+    woken again for events that arrived while it was processing.
+    """
+    assert timeout
+    pubsub = _init_queue_event_pubsub()
+    msg = pubsub.get_message(ignore_subscribe_messages=True, timeout=timeout)
+    if msg:
+        logger.debug("Woken by queue event: %s", msg)
+    # Drain remaining buffered messages
+    while pubsub.get_message(ignore_subscribe_messages=True, timeout=0):
+        pass

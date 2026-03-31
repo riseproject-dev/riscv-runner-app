@@ -227,8 +227,7 @@ def worker_loop():
         except Exception as e:
             logger.error("Worker error: %s\n%s", e, traceback.format_exc())
 
-        with db.queue_event:
-            db.queue_event.wait(timeout=POLL_INTERVAL)
+        db.wait_for_job(POLL_INTERVAL)
 
 
 def start_worker():
