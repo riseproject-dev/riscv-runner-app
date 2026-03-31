@@ -85,7 +85,7 @@ def demand_match():
         logger.debug("No pending jobs to process")
         return
 
-    logger.debug("Processing %d pending jobs: [%s]", len(pending_job_ids), ', '.join(pending_job_ids))
+    logger.info("Processing %d pending jobs: [%s]", len(pending_job_ids), ', '.join(pending_job_ids))
 
     # Cache per-org worker counts
     entity_worker_counts = {}
@@ -93,10 +93,10 @@ def demand_match():
     for job_id in pending_job_ids:
         job = db.get_job(job_id)
         if not job:
-            logger.debug("Job %s not found in DB, skipping", job_id)
+            logger.warning("Job %s not found in DB, skipping", job_id)
             continue
         if job.get("status") != "pending":
-            logger.debug("Job %s status is %s, not pending, skipping", job_id, job.get("status"))
+            logger.info("Job %s status is %s, not pending, skipping", job_id, job.get("status"))
             continue
 
         k8s_pool = job.get("k8s_pool")
@@ -115,7 +115,7 @@ def demand_match():
         # Check pool demand vs supply
         job_count, worker_count = db.get_pool_demand(entity_id, k8s_pool)
         if job_count <= worker_count:
-            logger.debug("Job %s: pool %s:%s demand met (jobs=%d, workers=%d)",
+            logger.info("Job %s: pool %s:%s demand met (jobs=%d, workers=%d)",
                         job_id, entity_id, k8s_pool, job_count, worker_count)
             continue
 
@@ -126,14 +126,14 @@ def demand_match():
             if entity_id not in entity_worker_counts:
                 entity_worker_counts[entity_id] = db.get_total_workers_for_entity(entity_id)
             if entity_worker_counts[entity_id] >= max_workers:
-                logger.debug("Job %s: entity %s at max_workers (%d/%d)",
+                logger.info("Job %s: entity %s at max_workers (%d/%d)",
                             job_id, entity_name, entity_worker_counts[entity_id], max_workers)
                 continue
 
         # Check k8s capacity
         node_selector = {"riseproject.dev/board": k8s_pool}
         if not k8s.has_available_slot(node_selector):
-            logger.debug("Job %s: no k8s capacity for pool %s", job_id, k8s_pool)
+            logger.info("Job %s: no k8s capacity for pool %s", job_id, k8s_pool)
             continue
 
         suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=9))
