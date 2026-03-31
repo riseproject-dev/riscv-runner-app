@@ -29,7 +29,7 @@ custom:
   # containers
   containers:
     gh-webhook:
-      registryImage: ${env:REGISTRY}/${env:IMAGE}:${self:custom.${self:provider.stage}.container-tag}
+      registryImage: ${env:REGISTRY}/${env:IMAGE}:gh-webhook-${self:custom.${self:provider.stage}.container-tag}
       port: 8080
       cpuLimit: 500
       memoryLimit: 512
