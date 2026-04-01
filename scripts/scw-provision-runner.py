@@ -180,6 +180,9 @@ sudo @@KUBEADM_JOIN_CMD@@
 sudo reboot
 """
 
+class ServerNotFoundException(Exception):
+    pass
+
 
 def get_control_plane_host(control_plane_name):
     """Returns (public_ip, private_ip)."""
@@ -217,7 +220,7 @@ def get_control_plane_host(control_plane_name):
                 raise RuntimeError(f"Control plane '{control_plane_name}' has no private IP")
 
             return public_ip, private_ip
-    raise RuntimeError(f"Control plane '{control_plane_name}' not found in project {PROJECT_ID}")
+    raise ServerNotFoundException(f"Control plane '{control_plane_name}' not found in project {PROJECT_ID}")
 
 
 def get_os_id():
@@ -260,7 +263,7 @@ def find_server_by_name(hostname):
     for server in resp.servers:
         if server.name == hostname:
             return server
-    raise RuntimeError(f"Server '{hostname}' not found in project {PROJECT_ID}")
+    raise ServerNotFoundException(f"Server '{hostname}' not found in project {PROJECT_ID}")
 
 
 def drain_and_delete_k8s_node(hostname, ssh_cp):
@@ -329,11 +332,18 @@ def cmd_create(args):
         print(f"Creating runner {runner}")
         print(f"{'='*60}")
 
-        cp_public_ip, cp_private_ip = get_control_plane_host(args.control_plane)
-        print(f"Using control plane: {cp_public_ip} (private: {cp_private_ip})")
+        control_plane = args.control_plane
+
+        try:
+            cp_public_ip, cp_private_ip = get_control_plane_host(control_plane)
+            print(f"Using control plane: {control_plane} (public: {cp_public_ip}, private: {cp_private_ip})")
+        except ServerNotFoundException:
+            print(f"Failed to find control plane {control_plane}")
+            sys.exit(1)
+
         ssh_cp = ssh_connect(host=cp_public_ip, user="root")
 
-        tags = [f"control-plane:{args.control_plane}"]
+        tags = [f"control-plane:{control_plane}"]
         print(f"Provisioning {runner}")
         server = create_server(runner, os_id, tags=tags)
         server.wait_for_server()
@@ -369,7 +379,6 @@ def cmd_reinstall(args):
         print(f"{'='*60}")
 
         server = find_server_by_name(runner)
-        print(f"server = {server}")
         print(f"Found existing server: {server.id}")
 
         control_plane = next(tag[14:] for tag in server.tags if tag.startswith("control-plane:"))
@@ -377,20 +386,114 @@ def cmd_reinstall(args):
             print(f"Failing to process {runner}: missing 'control-plane:*' tag, tags = [{",".join(server.tags)}]")
             sys.exit(1)
 
-        cp_public_ip, cp_private_ip = get_control_plane_host(control_plane)
-        print(f"Using control plane: {cp_public_ip} (private: {cp_private_ip})")
-        ssh_cp = ssh_connect(host=cp_public_ip, user="root")
+        cp_public_ip = None
+        cp_private_ip = None
+        try:
+            cp_public_ip, cp_private_ip = get_control_plane_host(control_plane)
+            print(f"Using control plane: {control_plane} (public: {cp_public_ip}, private: {cp_private_ip})")
+        except ServerNotFoundException:
+            if args.to_control_plane and args.to_control_plane != control_plane:
+                # Maybe the next TO control plane is working
+                pass
+            else:
+                print(f"Failed to find control plane {control_plane}")
+                sys.exit(1)
 
-        print(f"Draining and removing {runner} from k8s")
-        drain_and_delete_k8s_node(runner, ssh_cp)
-        print(f"Drained and removed {runner} from k8s")
+        if cp_public_ip:
+            ssh_cp = ssh_connect(host=cp_public_ip, user="root")
+
+            print(f"Draining and removing {runner} from k8s")
+            drain_and_delete_k8s_node(runner, ssh_cp)
+            print(f"Drained and removed {runner} from k8s")
 
         server = BareMetal(server.id)
+
+        # We are switching the runner to a different control plane
+        if args.to_control_plane:
+            if args.to_control_plane == control_plane:
+                print(f"WARNING! Using the same source and destination control plane, is that expected?")
+            else:
+                control_plane = args.to_control_plane
+                cp_public_ip, cp_private_ip = get_control_plane_host(control_plane)
+                print(f"Switching control plane: {control_plane} (public: {cp_public_ip}, private: {cp_private_ip})")
+                ssh_cp = ssh_connect(host=cp_public_ip, user="root")
+
+                # Update the control-plane tag
+                server.update_tags([f"control-plane:{control_plane}"])
 
         print(f"Reinstalling OS on {runner}...")
         server.reinstall(os_id, runner)
         server.wait_for_server()
         print(f"OS reinstalled on {runner}")
+
+        #FIXME(pn): Disable private network for now, it doesn't work reliably enough
+        # try:
+        #     pn = server.get_private_network()
+        # except ProvisioningException:
+        #     pn = server.attach_private_network()
+        # print(f"Private IP: {pn.ip}, vlan={pn.vlan_id}")
+        pn = None
+
+        ip = server.get_public_ip()
+        print(f"Public IP: {ip}")
+
+        ssh = ssh_connect(host=ip, user="ubuntu")
+        run_setup(ssh, pn, ssh_cp, cp_public_ip)
+
+        print(f"Waiting for node {runner} to be ready on k8s")
+        wait_for_k8s_node(runner, ssh_cp)
+
+        print(f"Server {runner} provisioned")
+
+
+def cmd_setup(args):
+    for runner in args.runners:
+        print(f"\n{'='*60}")
+        print(f"Setting up runner {runner}")
+        print(f"{'='*60}")
+
+        server = find_server_by_name(runner)
+        print(f"Found existing server: {server.id}")
+
+        control_plane = next(tag[14:] for tag in server.tags if tag.startswith("control-plane:"))
+        if not control_plane:
+            print(f"Failing to process {runner}: missing 'control-plane:*' tag, tags = [{",".join(server.tags)}]")
+            sys.exit(1)
+
+        cp_public_ip = None
+        cp_private_ip = None
+        try:
+            cp_public_ip, cp_private_ip = get_control_plane_host(control_plane)
+            print(f"Using control plane: {control_plane} (public: {cp_public_ip}, private: {cp_private_ip})")
+        except ServerNotFoundException:
+            if args.to_control_plane and args.to_control_plane != control_plane:
+                # Maybe the next TO control plane is working
+                pass
+            else:
+                print(f"Failed to find control plane {control_plane}")
+                sys.exit(1)
+
+        if cp_public_ip:
+            ssh_cp = ssh_connect(host=cp_public_ip, user="root")
+
+            print(f"Draining and removing {runner} from k8s")
+            drain_and_delete_k8s_node(runner, ssh_cp)
+            print(f"Drained and removed {runner} from k8s")
+
+        server = BareMetal(server.id)
+
+        # We are switching the runner to a different control plane
+        if args.to_control_plane:
+            if args.to_control_plane == control_plane:
+                print(f"WARNING! Using the same source and destination control plane, is that expected?")
+            else:
+                control_plane = args.to_control_plane
+                cp_public_ip, cp_private_ip = get_control_plane_host(control_plane)
+                print(f"Switching control plane: {control_plane} (public: {cp_public_ip}, private: {cp_private_ip})")
+                ssh_cp = ssh_connect(host=cp_public_ip, user="root")
+
+                # Update the control-plane tag
+                server.update_tags([f"control-plane:{control_plane}"])
 
         #FIXME(pn): Disable private network for now, it doesn't work reliably enough
         # try:
@@ -450,7 +553,7 @@ def cmd_delete(args):
             sys.exit(1)
 
         cp_public_ip, cp_private_ip = get_control_plane_host(control_plane)
-        print(f"Using control plane: {cp_public_ip} (private: {cp_private_ip})")
+        print(f"Using control plane: {control_plane} (public: {cp_public_ip}, private: {cp_private_ip})")
         ssh_cp = ssh_connect(host=cp_public_ip, user="root")
 
         print(f"Draining and removing {runner} from k8s")
@@ -474,7 +577,12 @@ def main():
     list_parser.add_argument("--control-plane", type=str, required=True, help="Name of the control plane instance")
 
     reinstall_parser = subparsers.add_parser("reinstall", help="Reinstall OS on existing runners")
+    reinstall_parser.add_argument("--to-control-plane", type=str, help="Name of the control plane instance to switch the runner to")
     reinstall_parser.add_argument("runners", nargs="+", type=str, help="Runner to reinstall")
+
+    setup_parser = subparsers.add_parser("setup", help="Setup existing runners")
+    setup_parser.add_argument("--to-control-plane", type=str, help="Name of the control plane instance to switch the runner to")
+    setup_parser.add_argument("runners", nargs="+", type=str, help="Runner to reinstall")
 
     delete_parser = subparsers.add_parser("delete", help="Delete existing runners")
     delete_parser.add_argument("runners", nargs="+", type=str, help="Runners to delete")
@@ -487,6 +595,8 @@ def main():
         cmd_create(args)
     elif args.command == "reinstall":
         cmd_reinstall(args)
+    elif args.command == "setup":
+        cmd_setup(args)
     elif args.command == "delete":
         cmd_delete(args)
     else:
