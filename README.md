@@ -311,7 +311,7 @@ pip3 install -r requirements.txt
 
 # 1. Create the control plane
 ## Pass --staging for a staging control-plane
-python scw-provision-control-plane.py create <control-plane-name> [--staging]
+python scw-provision-control-plane.py create [--staging]
 
 # 2. Add runner nodes (creates 3 bare metal RISC-V servers)
 python scw-provision-runner.py --control-plane <control-plane-name> create 3
