@@ -36,11 +36,13 @@ cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
 overlay
 br_netfilter
 nf_conntrack
+tun
 EOF
 
 sudo modprobe overlay
 sudo modprobe br_netfilter
 sudo modprobe nf_conntrack
+sudo modprobe tun
 
 # Configure sysctl params for Kubernetes networking
 cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
