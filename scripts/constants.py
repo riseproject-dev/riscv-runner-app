@@ -9,7 +9,6 @@ SSH_OPTS = [
 ]
 
 SSH_KEY_IDS = [
-    "14243d19-acaa-4d67-976c-8cd417fb613a",  # Ludovic Henry
-    "56ccd923-1ea3-4398-b8ee-7c1a930cbe75",  # Ludovic Henry
+    "ba303e6a-25a5-477b-a823-55dc2d1961a4",  # Ludovic Henry
 ]
 
