@@ -176,11 +176,6 @@ runcmd:
     kubeadm kubeconfig user --client-name=gh-deploy > /etc/kubernetes/kubeconfig-gh-deploy.conf
     kubeadm kubeconfig user --client-name=gh-app    > /etc/kubernetes/kubeconfig-gh-app.conf
 
-    echo "run the following commands to update GH:"
-    echo "(set -o pipefail; ssh root@${PUBLIC_IP} cat /etc/kubernetes/kubeconfig-gh-deploy.conf | gh secret set K8S_KUBECONFIG --repo riseproject-dev/riscv-runner-images --env @@ENVIRONMENT@@)"
-    echo "(set -o pipefail; ssh root@${PUBLIC_IP} cat /etc/kubernetes/kubeconfig-gh-deploy.conf | gh secret set K8S_KUBECONFIG --repo riseproject-dev/riscv-runner-device-plugin --env @@ENVIRONMENT@@)"
-    echo "(set -o pipefail; ssh root@${PUBLIC_IP} cat /etc/kubernetes/kubeconfig-gh-app.conf | gh secret set K8S_KUBECONFIG --repo riseproject-dev/riscv-runner-app --env @@ENVIRONMENT@@)"
-
     # Apply cluster roles
     kubectl apply -f /etc/kubernetes/clusterroles.yml
 
@@ -214,7 +209,9 @@ def cmd_create(args):
     print(f"Creating control plane {hostname}")
     print(f"{'='*60}")
 
-    cloud_init = CLOUD_INIT.replace("@@ENVIRONMENT@@", "staging" if staging else "main")
+    environment = "staging" if staging else "main"
+
+    cloud_init = CLOUD_INIT.replace("@@ENVIRONMENT@@", environment)
 
     server = Instance.create(hostname, SERVER_TYPE, BLOCK_STORAGE_SIZE, cloud_init)
     print(f"Server created: {server.id}")
@@ -244,17 +241,11 @@ def cmd_create(args):
     result = ssh.run("cat /etc/kubernetes/kubeconfig-luhenry.conf", hide=True)
     print(result.stdout)
 
-    print(f"\n{'='*60}")
-    print("Kubeconfig for gh-app:")
-    print(f"{'='*60}")
-    result = ssh.run("cat /etc/kubernetes/kubeconfig-gh-app.conf", hide=True)
-    print(result.stdout)
 
-    print(f"\n{'='*60}")
-    print("Kubeconfig for gh-deploy:")
-    print(f"{'='*60}")
-    result = ssh.run("cat /etc/kubernetes/kubeconfig-gh-deploy.conf", hide=True)
-    print(result.stdout)
+    print(f"Run the following commands to update GitHub secrets:")
+    print(f"(set -o pipefail; ssh root@{public_ip} cat /etc/kubernetes/kubeconfig-gh-deploy.conf | gh secret set K8S_KUBECONFIG --repo riseproject-dev/riscv-runner-images --env {environment})")
+    print(f"(set -o pipefail; ssh root@{public_ip} cat /etc/kubernetes/kubeconfig-gh-deploy.conf | gh secret set K8S_KUBECONFIG --repo riseproject-dev/riscv-runner-device-plugin --env {environment})")
+    print(f"(set -o pipefail; ssh root@{public_ip} cat /etc/kubernetes/kubeconfig-gh-app.conf | gh secret set K8S_KUBECONFIG --repo riseproject-dev/riscv-runner-app --env {environment})")
 
     print(f"\n{'='*60}")
     print(f"Control plane {hostname} provisioned successfully")
