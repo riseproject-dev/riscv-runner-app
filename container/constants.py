@@ -32,26 +32,32 @@ ENTITY_CONFIG = {
     RISEPROJECT_DEV_ORG_ID: {
         "max_workers": None,
         "pre_allocated": 0,
-        "staging": True,
+        "staging": [
+            "riscv-runner",
+            "riscv-runner-app",
+            "riscv-runner-images",
+            "riscv-runner-sample",
+            "riscv-runner-device-plugin",
+        ],
     },
     PYTORCH_ORG_ID: {
         "max_workers": 20,
         "pre_allocated": 0,
-        "staging": False,
     },
     GGML_ORG_ORG_ID: {
         "max_workers": 20,
         "pre_allocated": 0,
-        "staging": False,
     },
     LUHENRY_USER_ID: {
         "max_workers": None,
         "pre_allocated": 0,
-        "staging": True,
+        "staging": [
+            "riscv-runner-sample",
+        ],
     },
 }
 
-STAGING_ENTITIES = {oid for oid, c in ENTITY_CONFIG.items() if c.get("staging")}
+STAGING_ENTITIES = {oid: c["staging"] for oid, c in ENTITY_CONFIG.items() if c.get("staging", False)}
 
 RUNNER_REGISTRY = "rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s"
 RUNNER_IMAGE = "riscv-runner"

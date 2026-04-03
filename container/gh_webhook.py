@@ -72,10 +72,15 @@ def proxy_to_staging():
 
     entity_id = payload["repository"]["owner"]["id"]
     if entity_id not in STAGING_ENTITIES:
-        logger.debug("Received request for entity %s, not in staging entities, skipping proxy", entity_id)
+        logger.debug("Received request for entity=%s, not in staging entities, skipping proxy", entity_id)
         return
 
-    logger.debug("Proxying request for entity %s to staging (%s)", entity_id, STAGING_URL)
+    repo_name = payload["repository"]["name"]
+    if repo_name not in STAGING_ENTITIES[entity_id]:
+        logger.debug("Received request for entity=%s repo=%s, not in staging entities, skipping proxy", entity_id, repo_name)
+        return
+
+    logger.debug("Proxying request for entity=%s repo=%s to staging (%s)", entity_id, repo_name, STAGING_URL)
     resp = requests.post(
         STAGING_URL,
         data=request.get_data(),
