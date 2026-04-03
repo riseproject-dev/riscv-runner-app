@@ -87,7 +87,7 @@ def proxy_to_staging():
         headers={k: v for k, v in request.headers if k.lower() != "host"},
         timeout=30,
     )
-    logger.info("Proxied request for entity %s to staging, status=%s", entity_id, resp.status_code)
+    logger.info("Proxied request for entity=%s repo=%s to staging, status=%s", entity_id, repo_name, resp.status_code)
     return make_response(resp.content, resp.status_code)
 
 
