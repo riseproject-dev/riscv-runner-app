@@ -181,7 +181,7 @@ def match_labels_to_k8s(org_id, repo_full_name, job_labels):
 
     # Special case(s) for GGML org
     elif org_id == GGML_ORG_ORG_ID or (org_id == RISEPROJECT_DEV_ORG_ID and repo_full_name.endswith("/llama.cpp")):
-        if job_labels == ["RISCV64"] or job_labels == ["ubuntu-24.04-riscv"]:
+        if job_labels == ["ubuntu-24.04-riscv"]:
             return "cloudv10x-jupiter", RUNNER_IMAGE_UBUNTU_24_04
         else:
             raise WebhookError(200, f"Ignoring job: missing required platform label (got {job_labels}) for GGML org")
