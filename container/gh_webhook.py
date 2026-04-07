@@ -172,7 +172,7 @@ def match_labels_to_k8s(org_id, repo_full_name, job_labels):
     """
     # Special case(s) for PyTorch org
     if org_id == PYTORCH_ORG_ID or (org_id == RISEPROJECT_DEV_ORG_ID and repo_full_name in ["riseproject-dev/pytorch", "riseproject-dev/executorch"]):
-        if "linux.riscv64.xlarge" in job_labels or "linux.riscv64.2xlarge" in job_labels:
+        if any("linux.riscv64.xlarge" in job_label or "linux.riscv64.2xlarge" in job_label for job_label in job_labels):
             return "scw-em-rv1", RUNNER_IMAGE_UBUNTU_24_04
         elif "ubuntu-24.04-riscv" in job_labels:
             return "scw-em-rv1", RUNNER_IMAGE_UBUNTU_24_04
