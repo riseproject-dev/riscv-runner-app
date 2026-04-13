@@ -145,7 +145,12 @@ def test_demand_match_respects_max_workers(mock_provision, mock_slot, mock_db):
 @patch("scheduler.gh.ensure_runner_group", return_value=42)
 @patch("scheduler.gh.create_jit_runner_config_org", return_value="jit-config")
 def test_demand_match_handles_provision_failure(mock_jit, mock_group, mock_auth, mock_provision, mock_slot, mock_db):
-    """Test that provisioning failure is handled gracefully."""
+    """Test that provisioning failure is handled gracefully.
+
+    add_worker is called BEFORE provision_runner to reserve the pod name.
+    If provisioning fails, the orphan worker (status=pending, no pod) will
+    be cleaned up by cleanup_pods() orphan detection.
+    """
     job = make_job(111)
     mock_db.get_pending_jobs.return_value = ["111"]
     mock_db.get_job.return_value = job
@@ -154,7 +159,8 @@ def test_demand_match_handles_provision_failure(mock_jit, mock_group, mock_auth,
 
     demand_match()  # should not raise
 
-    mock_db.add_worker.assert_not_called()
+    # add_worker is called before provision_runner to reserve the name
+    mock_db.add_worker.assert_called_once()
 
 
 # --- cleanup_pods tests ---

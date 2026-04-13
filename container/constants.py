@@ -18,6 +18,9 @@ GHAPP_PERSONAL_PRIVATE_KEY = os.environ["GHAPP_PERSONAL_PRIVATE_KEY"]  # PEM-enc
 GHAPP_WEBHOOK_SECRET = os.environ["GHAPP_WEBHOOK_SECRET"]  # Secret for validating GitHub webhook signatures
 
 REDIS_URL = os.environ["REDIS_URL"]
+POSTGRES_URL = os.environ["POSTGRES_URL"]  # postgresql://user:pass@host:5432/db?sslmode=require
+POSTGRES_SCHEMA = "prod" if PROD else "staging"
+POSTGRES_MAXCONN = 10
 
 RUNNER_GROUP_NAME = "RISE RISC-V Runners"
 

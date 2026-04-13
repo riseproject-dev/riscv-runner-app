@@ -1,5 +1,6 @@
 jwt
 kubernetes
+psycopg2-binary
 redis
 requests
 waitress

@@ -115,6 +115,7 @@ jobs:
           GHAPP_PERSONAL_PRIVATE_KEY: ${{ secrets.GHAPP_PERSONAL_PRIVATE_KEY }}
           K8S_KUBECONFIG: ${{ secrets.K8S_KUBECONFIG }}
           REDIS_URL: ${{ secrets.REDIS_URL }}
+          POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
 
       - name: Health check
         run: python3 ./bin/check-health.py ${{ needs.resolve.outputs.environment == 'staging' && '--staging' || '' }}

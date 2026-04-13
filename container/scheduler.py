@@ -6,7 +6,8 @@ import threading
 import time
 import traceback
 
-import db
+import db_migration as db
+from db_migration import DuplicateRunnerNameException
 import k8s
 import github as gh
 from constants import *
@@ -136,10 +137,24 @@ def demand_match():
             logger.info("Job %s: no k8s capacity for pool %s", job_id, k8s_pool)
             continue
 
-        suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=9))
-        runner_name = f"rise-riscv-runner%s-{entity_id}-{suffix}" % ("" if PROD else "-staging")
+        # Reserve name in DB first — detects collision before creating k8s pod
+        runner_name = None
+        for _ in range(5):  # max retries for name collision
+            suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=9))
+            candidate = f"rise-riscv-runner%s-{entity_id}-{suffix}" % ("" if PROD else "-staging")
+            try:
+                db.add_worker(entity_id, k8s_pool, candidate, job_labels=labels, k8s_image=k8s_image)
+                runner_name = candidate
+                break
+            except DuplicateRunnerNameException:
+                logger.warning("Runner name %s collision, regenerating", candidate)
+                continue
 
-        # Provision
+        if runner_name is None:
+            logger.error("Failed to generate unique runner name for entity=%s pool=%s after retries", entity_name, k8s_pool)
+            continue
+
+        # Name reserved in DB, now safe to provision
         try:
             token = gh.authenticate_app(int(installation_id), entity_type=entity_type)
 
@@ -150,8 +165,6 @@ def demand_match():
                 jit_config = gh.create_jit_runner_config_repo(token, labels, repo_full_name, runner_name)
 
             k8s.provision_runner(jit_config, runner_name, k8s_image, k8s_pool, entity_id)
-
-            db.add_worker(entity_id, k8s_pool, runner_name)
 
             # Update local cache
             entity_worker_counts[entity_id] = entity_worker_counts.get(entity_id, 0) + 1
@@ -167,7 +180,15 @@ def cleanup_pods():
     Clean up completed/failed pods and stale job hashes.
 
     Lists all runner pods, deletes those in Succeeded/Failed phase, and
-    removes them from their pool:workers set.
+    removes them from their pool:workers set. Also syncs worker status
+    in PostgreSQL from k8s pod phases.
+
+    K8s pod phase -> worker status mapping:
+      Pending   -> worker 'pending'   (pod scheduled, containers not yet started)
+      Running   -> worker 'running'   (at least one container running)
+      Succeeded -> worker 'completed' (all containers exited 0)
+      Failed    -> worker 'completed' (at least one container failed)
+      Unknown   -> no change          (pod state indeterminate, keep current)
     """
     # First get the list of workers from redis, then list pods from k8s. This is
     # to avoid the race condition where we delete a pod that was just provisioned
@@ -176,6 +197,18 @@ def cleanup_pods():
     # that are known to Redis as active workers.
     workers = list(db.iter_workers())
     pods = k8s.list_pods()
+
+    # Collect failure info for Failed pods before deletion
+    failure_info_by_pod = {}
+    for pod in pods:
+        if pod.status.phase == "Failed":
+            try:
+                failure_info_by_pod[pod.metadata.name] = k8s.collect_pod_failure_info(pod)
+            except Exception as e:
+                logger.error("Failed to collect failure info for pod %s: %s", pod.metadata.name, e)
+
+    # Sync worker status in PostgreSQL (pending->running, running/pending->completed)
+    db.sync_worker_status(pods, failure_info_by_pod)
 
     for pod in pods:
         if pod.status.phase not in ("Succeeded", "Failed"):
@@ -195,10 +228,16 @@ def cleanup_pods():
         if entity_id and k8s_pool:
             db.remove_worker(entity_id, k8s_pool, pod_name)
 
+    # Detect orphaned workers (in DB but no corresponding k8s pod)
+    active_pod_names = {p.metadata.name for p in pods}
     for entity_id, k8s_pool, pod_name in workers:
-        if not any(p.metadata.name == pod_name for p in pods):
+        if pod_name not in active_pod_names:
             logger.warning("Worker %s in entity_id %s pool %s has no corresponding pod, removing from DB", pod_name, entity_id, k8s_pool)
             db.remove_worker(entity_id, k8s_pool, pod_name)
+
+    # Also mark orphaned workers in PostgreSQL (only workers we know about)
+    known_worker_pod_names = [pod_name for _, _, pod_name in workers]
+    db.mark_orphaned_workers_completed(active_pod_names, known_worker_pod_names)
 
 def cleanup_jobs():
     """Clean up old completed job hashes."""
@@ -231,6 +270,9 @@ if __name__ == "__main__":
         format='%(pathname)s:%(lineno)d::%(funcName)s: [%(levelname)s] %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
+
+    # Ensure PostgreSQL schema/tables exist (webhook does the full bootstrap migration)
+    db.ensure_schema()
 
     def http_worker():
         from waitress import serve

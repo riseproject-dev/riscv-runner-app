@@ -156,7 +156,12 @@ def create_jit_runner_config_repo(token, labels, repo_full_name, runner_name):
 
 
 def get_job_status(repo_full_name, job_id, token):
-    """Get the status of a workflow job from GitHub API."""
+    """Get the effective status of a workflow job from GitHub API.
+
+    GitHub can return status="in_progress" with conclusion="cancelled" (or other
+    terminal conclusions). When a conclusion is present, the job is effectively
+    completed regardless of the status field.
+    """
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github.v3+json",
@@ -166,7 +171,12 @@ def get_job_status(repo_full_name, job_id, token):
 
     if response.status_code == 200:
         data = response.json()
-        return data.get("status")  # queued, in_progress, completed
+        status = data.get("status")  # queued, in_progress, completed
+        conclusion = data.get("conclusion")  # null, success, failure, cancelled, ...
+        # A non-null conclusion means the job is done, even if status says in_progress
+        if conclusion is not None:
+            return "completed"
+        return status
     else:
         logger.error("Failed to get job status for %s job %s: %s", repo_full_name, job_id, response.status_code)
         raise GitHubAPIError(response.status_code, f"Failed to get job status: {response.text}")

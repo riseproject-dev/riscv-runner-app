@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import functools
 import logging
 import kubernetes as k8s
@@ -197,3 +199,83 @@ def list_pods():
         api = k8s.client.CoreV1Api(client)
         pods = api.list_namespaced_pod(label_selector="app=rise-riscv-runner", namespace="default")
         return pods.items
+
+
+def get_pod_logs(pod_name: str, container: str) -> str | None:
+    """Get full logs for a container in a pod. Returns log string or None on failure."""
+    try:
+        with _init_client() as client:
+            api = k8s.client.CoreV1Api(client)
+            return api.read_namespaced_pod_log(
+                name=pod_name,
+                namespace="default",
+                container=container,
+            )
+    except Exception as e:
+        logger.debug("Failed to get logs for %s/%s: %s", pod_name, container, e)
+        return None
+
+
+def collect_pod_failure_info(pod) -> dict:
+    """Collect exhaustive diagnostic info from a Failed pod.
+
+    Gathers container termination info, full container logs, and pod events
+    into a dict for storage in the workers.failure_info JSONB column.
+    Called before delete_pod() so logs are still available.
+    """
+    pod_name = pod.metadata.name
+    info = {
+        "containers": {},
+        "events": [],
+        "pod_message": pod.status.message,
+        "pod_reason": pod.status.reason,
+    }
+
+    # Container termination info + logs (main containers)
+    for cs in (pod.status.container_statuses or []):
+        container_info = _extract_container_info(cs)
+        container_info["logs"] = get_pod_logs(pod_name, cs.name)
+        info["containers"][cs.name] = container_info
+
+    # Init container termination info + logs (dind sidecar is an init container)
+    for cs in (pod.status.init_container_statuses or []):
+        container_info = _extract_container_info(cs)
+        container_info["logs"] = get_pod_logs(pod_name, cs.name)
+        info["containers"][cs.name] = container_info
+
+    # Pod events
+    try:
+        events = get_pod_events(pod_name)
+        for ev in events:
+            ts = ev.last_timestamp or ev.event_time or ev.metadata.creation_timestamp
+            info["events"].append({
+                "type": ev.type,
+                "reason": ev.reason,
+                "message": ev.message,
+                "count": ev.count,
+                "first_seen": str(ev.first_timestamp) if ev.first_timestamp else None,
+                "last_seen": str(ts) if ts else None,
+            })
+    except Exception as e:
+        logger.debug("Failed to get events for %s: %s", pod_name, e)
+
+    return info
+
+
+def _extract_container_info(container_status) -> dict:
+    """Extract termination info from a V1ContainerStatus."""
+    result = {
+        "exit_code": None,
+        "reason": None,
+        "message": None,
+    }
+    if container_status.state and container_status.state.terminated:
+        t = container_status.state.terminated
+        result["exit_code"] = t.exit_code
+        result["reason"] = t.reason
+        result["message"] = t.message
+    elif container_status.state and container_status.state.waiting:
+        w = container_status.state.waiting
+        result["reason"] = w.reason
+        result["message"] = w.message
+    return result

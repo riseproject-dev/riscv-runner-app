@@ -1,0 +1,643 @@
+from __future__ import annotations
+
+import json
+import logging
+import select
+import time
+import threading
+from typing import Any, Iterator
+
+import psycopg2
+import psycopg2.extras
+from psycopg2.pool import ThreadedConnectionPool
+
+from constants import POSTGRES_URL, POSTGRES_SCHEMA, POSTGRES_MAXCONN
+
+logger = logging.getLogger(__name__)
+
+
+class DuplicateRunnerNameException(Exception):
+    """Raised when add_worker() detects a pod_name collision."""
+    pass
+
+
+# --- Connection management ---
+# PostgreSQL connections are 1-query-at-a-time and NOT thread-safe.
+# Waitress serves webhooks with 4+ threads, so each needs its own connection.
+# ThreadedConnectionPool: minconn=1, maxconn=POSTGRES_MAXCONN. Threads borrow/return connections.
+#
+# A semaphore gates access so threads block (instead of crashing with PoolError)
+# when all connections are in use.
+
+_pool: ThreadedConnectionPool | None = None
+_pool_semaphore: threading.Semaphore | None = None
+_pool_lock = threading.Lock()
+
+
+def _init_pool() -> ThreadedConnectionPool:
+    global _pool, _pool_semaphore
+    if _pool is not None:
+        return _pool
+    with _pool_lock:
+        if _pool is not None:
+            return _pool
+        _pool = ThreadedConnectionPool(
+            minconn=1,
+            maxconn=POSTGRES_MAXCONN,
+            dsn=POSTGRES_URL,
+        )
+        _pool_semaphore = threading.Semaphore(POSTGRES_MAXCONN)
+        return _pool
+
+
+class _PoolConnection:
+    """Context manager that borrows a connection from the pool and returns it.
+
+    - Acquires a semaphore slot before borrowing (blocks if pool is full).
+    - Sets search_path on every borrowed connection.
+    - Auto-commits on clean exit, auto-rollbacks on exception.
+    - Releases the semaphore slot after returning the connection.
+    """
+    def __init__(self) -> None:
+        self.conn = None
+
+    def __enter__(self):
+        pool = _init_pool()
+        _pool_semaphore.acquire()
+        try:
+            self.conn = pool.getconn()
+            with self.conn.cursor() as cur:
+                cur.execute(f"SET search_path TO {POSTGRES_SCHEMA}")
+        except Exception:
+            if self.conn is not None:
+                pool.putconn(self.conn)
+                self.conn = None
+            _pool_semaphore.release()
+            raise
+        return self.conn
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.conn is not None:
+            if exc_type is not None:
+                self.conn.rollback()
+            else:
+                self.conn.commit()
+            _init_pool().putconn(self.conn)
+            self.conn = None
+        _pool_semaphore.release()
+        return False
+
+
+def _get_conn() -> _PoolConnection:
+    return _PoolConnection()
+
+
+# --- Schema bootstrap ---
+
+def ensure_schema() -> None:
+    """Create schema, enum type, tables, and indexes if they don't exist. Idempotent.
+
+    Uses a direct connection (not the pool context manager) because DDL
+    requires autocommit=True, which must be set before any statement runs.
+    The pool context manager runs SET search_path on enter, which starts a
+    transaction and prevents setting autocommit afterwards.
+    """
+    pool = _init_pool()
+    _pool_semaphore.acquire()
+    conn = pool.getconn()
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(f"CREATE SCHEMA IF NOT EXISTS {POSTGRES_SCHEMA}")
+            cur.execute(f"SET search_path TO {POSTGRES_SCHEMA}")
+
+            # Create enum type (idempotent via DO block)
+            cur.execute("""
+                DO $$ BEGIN
+                    CREATE TYPE status_enum AS ENUM ('pending', 'running', 'completed');
+                EXCEPTION
+                    WHEN duplicate_object THEN null;
+                END $$
+            """)
+
+            # Jobs table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS jobs (
+                    job_id          BIGINT PRIMARY KEY,
+                    status          status_enum NOT NULL DEFAULT 'pending',
+                    entity_id       BIGINT NOT NULL,
+                    entity_name     TEXT NOT NULL,
+                    entity_type     TEXT NOT NULL,
+                    repo_full_name  TEXT NOT NULL,
+                    installation_id BIGINT NOT NULL,
+                    job_labels      JSONB NOT NULL DEFAULT '[]',
+                    k8s_pool        TEXT NOT NULL,
+                    k8s_image       TEXT NOT NULL,
+                    html_url        TEXT,
+                    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+            """)
+
+            # Workers table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS workers (
+                    pod_name      TEXT PRIMARY KEY,
+                    entity_id     BIGINT NOT NULL,
+                    k8s_pool      TEXT NOT NULL,
+                    job_labels    JSONB,
+                    k8s_image     TEXT,
+                    status        status_enum NOT NULL DEFAULT 'pending',
+                    failure_info  JSONB,
+                    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+            """)
+
+            # Indexes (IF NOT EXISTS for idempotency)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_jobs_active
+                ON jobs (entity_id, job_labels, created_at)
+                WHERE status != 'completed'
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_jobs_reconcile
+                ON jobs (installation_id)
+                WHERE status != 'completed'
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_jobs_created
+                ON jobs (created_at DESC)
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_workers_active
+                ON workers (entity_id, job_labels, k8s_pool)
+                WHERE status != 'completed'
+            """)
+        conn.autocommit = False
+    finally:
+        pool.putconn(conn)
+        _pool_semaphore.release()
+    logger.info("Schema '%s' ensured (tables + indexes)", POSTGRES_SCHEMA)
+
+
+# --- Job operations ---
+
+def store_job(job_id: int, entity_id: int, entity_name: str, entity_type: str | Any,
+              repo_full_name: str, installation_id: int, labels: list[str],
+              k8s_pool: str, k8s_image: str, html_url: str) -> bool:
+    """Store a new job. Returns True if created, False if duplicate."""
+    sorted_labels = json.dumps(sorted(labels))
+    entity_type_val = entity_type.value if hasattr(entity_type, 'value') else str(entity_type)
+    now = time.time()
+
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO jobs (job_id, status, entity_id, entity_name, entity_type,
+                                  repo_full_name, installation_id, job_labels, k8s_pool,
+                                  k8s_image, html_url, created_at, updated_at)
+                VALUES (%s, 'pending', %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        to_timestamp(%s), to_timestamp(%s))
+                ON CONFLICT (job_id) DO NOTHING
+            """, (int(job_id), int(entity_id), entity_name, entity_type_val,
+                  repo_full_name, int(installation_id), sorted_labels, k8s_pool,
+                  k8s_image, html_url, now, now))
+            created = cur.rowcount > 0
+
+            if created:
+                cur.execute(f"NOTIFY {POSTGRES_SCHEMA}_queue_event, %s", (str(job_id),))
+
+    if created:
+        logger.info("Stored job %s for entity %s pool %s", job_id, entity_name, k8s_pool)
+    else:
+        logger.debug("Job %s already exists, skipping", job_id)
+    return created
+
+
+def update_job_running(job_id: int) -> str | None:
+    """Update job status to running. Returns previous status string or None.
+
+    Only allows the transition: pending -> running.
+    """
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                WITH prev AS (SELECT status FROM jobs WHERE job_id = %s)
+                UPDATE jobs SET status = 'running', updated_at = now()
+                WHERE job_id = %s AND status = 'pending'
+                RETURNING (SELECT status::text FROM prev) as prev_status
+            """, (int(job_id), int(job_id)))
+            row = cur.fetchone()
+
+            if row is not None:
+                logger.info("Job %s status updated to running (was %s)", job_id, row[0])
+                return row[0]
+
+            # UPDATE didn't match — either job doesn't exist or is already running/completed
+            cur.execute("SELECT status::text FROM jobs WHERE job_id = %s", (int(job_id),))
+            existing = cur.fetchone()
+            if existing is None:
+                logger.debug("Job %s not found in PostgreSQL", job_id)
+                return None
+            logger.debug("Job %s not updated to running (current status: %s)", job_id, existing[0])
+            return existing[0]
+
+
+def update_job_completed(job_id: int) -> str | None:
+    """Update job status to completed. Returns previous status string or None.
+
+    Allows transitions: pending -> completed, running -> completed.
+    """
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                WITH prev AS (SELECT status FROM jobs WHERE job_id = %s)
+                UPDATE jobs SET status = 'completed', updated_at = now()
+                WHERE job_id = %s AND (status = 'pending' OR status = 'running')
+                RETURNING (SELECT status::text FROM prev) as prev_status
+            """, (int(job_id), int(job_id)))
+            row = cur.fetchone()
+
+            if row is not None:
+                logger.info("Job %s status updated to completed (was %s)", job_id, row[0])
+                return row[0]
+
+            # UPDATE didn't match — either job doesn't exist or is already completed
+            cur.execute("SELECT status::text FROM jobs WHERE job_id = %s", (int(job_id),))
+            existing = cur.fetchone()
+            if existing is None:
+                logger.debug("Job %s not found in PostgreSQL", job_id)
+                return None
+            return existing[0]
+
+
+# --- Worker operations ---
+
+def get_pool_demand(entity_id: int, k8s_pool: str) -> tuple[int, int]:
+    """Return (job_count, worker_count) for a pool."""
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    (SELECT COUNT(*) FROM jobs
+                     WHERE entity_id = %s AND k8s_pool = %s
+                       AND (status = 'pending' OR status = 'running')) as job_count,
+                    (SELECT COUNT(*) FROM workers
+                     WHERE entity_id = %s AND k8s_pool = %s
+                       AND (status = 'pending' OR status = 'running')) as worker_count
+            """, (int(entity_id), k8s_pool, int(entity_id), k8s_pool))
+            row = cur.fetchone()
+    return row[0], row[1]
+
+
+def get_total_workers_for_entity(entity_id: int) -> int:
+    """Return total worker count across all pools for an entity."""
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT COUNT(*) FROM workers
+                WHERE entity_id = %s AND (status = 'pending' OR status = 'running')
+            """, (int(entity_id),))
+            row = cur.fetchone()
+    return row[0]
+
+
+def get_pending_jobs() -> list[str]:
+    """Return all pending job IDs in FIFO order."""
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT job_id FROM jobs
+                WHERE status = 'pending'
+                ORDER BY created_at
+            """)
+            rows = cur.fetchall()
+    return [str(row[0]) for row in rows]
+
+
+def add_worker(entity_id: int, k8s_pool: str, pod_name: str,
+               job_labels: list[str] | None = None, k8s_image: str | None = None) -> None:
+    """Add a worker. Raises DuplicateRunnerNameException on pod_name collision."""
+    sorted_labels = json.dumps(sorted(job_labels)) if job_labels else None
+
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO workers (pod_name, entity_id, k8s_pool, job_labels, k8s_image,
+                                     status, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, 'pending', now(), now())
+                ON CONFLICT (pod_name) DO NOTHING
+            """, (pod_name, int(entity_id), k8s_pool, sorted_labels, k8s_image))
+
+            if cur.rowcount == 0:
+                raise DuplicateRunnerNameException(
+                    f"Worker pod_name '{pod_name}' already exists")
+
+    logger.debug("Added worker %s to pool %s:%s", pod_name, entity_id, k8s_pool)
+
+
+def remove_worker(entity_id: int, k8s_pool: str, pod_name: str) -> None:
+    """Mark a worker as completed (never delete).
+
+    Allows transitions: pending -> completed, running -> completed.
+    """
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE workers SET status = 'completed', updated_at = now()
+                WHERE pod_name = %s AND (status = 'pending' OR status = 'running')
+            """, (pod_name,))
+    logger.debug("Marked worker %s completed in pool %s:%s", pod_name, entity_id, k8s_pool)
+
+
+def iter_workers() -> Iterator[tuple[str, str, str]]:
+    """Yield (entity_id, k8s_pool, pod_name) for all active workers."""
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT entity_id, k8s_pool, pod_name FROM workers
+                WHERE status = 'pending' OR status = 'running'
+            """)
+            rows = cur.fetchall()
+    for row in rows:
+        yield str(row[0]), row[1], row[2]
+
+
+def get_job(job_id: int) -> dict[str, str]:
+    """Return the full job as a dict (string values to match Redis format), or empty dict."""
+    with _get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM jobs WHERE job_id = %s", (int(job_id),))
+            row = cur.fetchone()
+    if not row:
+        return {}
+    return _job_row_to_dict(row)
+
+
+def cleanup_job(job_id: int) -> None:
+    """Remove a completed job hash. Kept for compatibility with Redis cleanup logic."""
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM jobs WHERE job_id = %s", (int(job_id),))
+    logger.debug("Cleaned up job %s", job_id)
+
+
+def get_all_active_job_ids() -> set[str]:
+    """Return all job_ids that are not completed."""
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT job_id FROM jobs WHERE status = 'pending' OR status = 'running'")
+            rows = cur.fetchall()
+    return {str(row[0]) for row in rows}
+
+
+def get_pool_usage() -> dict[tuple[str, str], dict[str, Any]]:
+    """Return detailed usage matching Redis format."""
+    with _get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT entity_id, k8s_pool, entity_name, job_id, status,
+                       repo_full_name, html_url, created_at
+                FROM jobs WHERE status = 'pending' OR status = 'running'
+            """)
+            job_rows = cur.fetchall()
+
+            cur.execute("""
+                SELECT entity_id, k8s_pool, pod_name
+                FROM workers WHERE status = 'pending' OR status = 'running'
+            """)
+            worker_rows = cur.fetchall()
+
+    result = {}
+    for row in job_rows:
+        key = (str(row["entity_id"]), row["k8s_pool"])
+        if key not in result:
+            result[key] = {"entity_name": row["entity_name"], "jobs": [], "workers": []}
+        result[key]["jobs"].append({
+            "k8s_pool": row["k8s_pool"],
+            "job_id": str(row["job_id"]),
+            "status": row["status"],
+            "repo_full_name": row["repo_full_name"] or "",
+            "html_url": row["html_url"] or "",
+            "created_at": str(row["created_at"].timestamp()) if row["created_at"] else "",
+        })
+
+    for row in worker_rows:
+        key = (str(row["entity_id"]), row["k8s_pool"])
+        if key not in result:
+            result[key] = {"entity_name": str(row["entity_id"]), "jobs": [], "workers": []}
+        result[key]["workers"].append(row["pod_name"])
+
+    return result
+
+
+def get_all_jobs() -> list[dict[str, str]]:
+    """Return all job hashes as a list of dicts."""
+    with _get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM jobs")
+            rows = cur.fetchall()
+    return [_job_row_to_dict(row) for row in rows]
+
+
+def iter_completed_jobs() -> Iterator[tuple[str, dict[str, str]]]:
+    """Yield (job_id, data_dict) for all completed jobs."""
+    with _get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM jobs WHERE status = 'completed'")
+            rows = cur.fetchall()
+    for row in rows:
+        data = _job_row_to_dict(row)
+        yield data["job_id"], data
+
+
+def sync_worker_status(pods: list[Any], failure_info_by_pod: dict[str, dict]) -> None:
+    """Bulk update worker status from k8s pod phases.
+
+    K8s pod phase mapping:
+      Pending   -> worker 'pending'   (pod scheduled, containers not yet started)
+      Running   -> worker 'running'   (at least one container running)
+      Succeeded -> worker 'completed' (all containers exited 0)
+      Failed    -> worker 'completed' (at least one container failed)
+      Unknown   -> no change          (pod state indeterminate)
+
+    Args:
+        pods: list of k8s pod objects from k8s.list_pods()
+        failure_info_by_pod: dict of {pod_name: failure_info_dict} for Failed pods
+    """
+    assert failure_info_by_pod is not None, "failure_info_by_pod must be a dict, not None"
+
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            for pod in pods:
+                phase = pod.status.phase
+                pod_name = pod.metadata.name
+
+                if phase == "Running":
+                    # pending -> running
+                    cur.execute("""
+                        UPDATE workers SET status = 'running', updated_at = now()
+                        WHERE pod_name = %s AND status = 'pending'
+                    """, (pod_name,))
+                elif phase in ("Succeeded", "Failed"):
+                    # pending -> completed, running -> completed
+                    failure_info = failure_info_by_pod.get(pod_name)
+                    if failure_info:
+                        cur.execute("""
+                            UPDATE workers SET status = 'completed', updated_at = now(),
+                                   failure_info = %s
+                            WHERE pod_name = %s AND (status = 'pending' OR status = 'running')
+                        """, (json.dumps(failure_info), pod_name))
+                    else:
+                        cur.execute("""
+                            UPDATE workers SET status = 'completed', updated_at = now()
+                            WHERE pod_name = %s AND (status = 'pending' OR status = 'running')
+                        """, (pod_name,))
+
+
+def mark_orphaned_workers_completed(active_pod_names: set[str], known_worker_pod_names: list[str]) -> None:
+    """Mark specific orphaned workers as completed.
+
+    Only marks workers that are both:
+    1. In known_worker_pod_names (explicitly known to the caller as workers)
+    2. NOT in active_pod_names (no matching k8s pod)
+
+    Allows transitions: pending -> completed, running -> completed.
+
+    Args:
+        active_pod_names: Set of pod names that currently exist in k8s.
+        known_worker_pod_names: List of pod names the caller knows are workers
+            (from iter_workers). Only these are candidates for orphan marking.
+    """
+    if not known_worker_pod_names:
+        return
+
+    orphaned = [name for name in known_worker_pod_names if name not in active_pod_names]
+    if not orphaned:
+        return
+
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE workers SET status = 'completed', updated_at = now()
+                WHERE pod_name = ANY(%s) AND (status = 'pending' OR status = 'running')
+            """, (orphaned,))
+    logger.debug("Marked %d orphaned workers as completed", len(orphaned))
+
+
+# --- Upsert for migration ---
+
+def upsert_job(job_id: int | str, status: str, entity_id: int | str, entity_name: str,
+               entity_type: str, repo_full_name: str, installation_id: int | str,
+               job_labels: list[str] | str, k8s_pool: str, k8s_image: str,
+               html_url: str | None, created_at: float | str) -> None:
+    """Insert or update a job from Redis migration. Converges state on conflict."""
+    sorted_labels = json.dumps(sorted(job_labels)) if isinstance(job_labels, list) else job_labels
+
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO jobs (job_id, status, entity_id, entity_name, entity_type,
+                                  repo_full_name, installation_id, job_labels, k8s_pool,
+                                  k8s_image, html_url, created_at, updated_at)
+                VALUES (%s, %s::status_enum, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        to_timestamp(%s), to_timestamp(%s))
+                ON CONFLICT (job_id) DO UPDATE SET
+                    status = EXCLUDED.status,
+                    entity_id = EXCLUDED.entity_id,
+                    entity_name = EXCLUDED.entity_name,
+                    entity_type = EXCLUDED.entity_type,
+                    repo_full_name = EXCLUDED.repo_full_name,
+                    installation_id = EXCLUDED.installation_id,
+                    job_labels = EXCLUDED.job_labels,
+                    k8s_pool = EXCLUDED.k8s_pool,
+                    k8s_image = EXCLUDED.k8s_image,
+                    html_url = EXCLUDED.html_url
+            """, (int(job_id), status, int(entity_id), entity_name, entity_type,
+                  repo_full_name, int(installation_id), sorted_labels, k8s_pool,
+                  k8s_image, html_url, float(created_at), float(created_at)))
+
+
+def upsert_worker(pod_name: str, entity_id: int | str, k8s_pool: str,
+                  job_labels: list[str] | None = None, k8s_image: str | None = None) -> None:
+    """Insert a worker from Redis migration. Converges state on conflict."""
+    sorted_labels = json.dumps(sorted(job_labels)) if job_labels else None
+
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO workers (pod_name, entity_id, k8s_pool, job_labels, k8s_image,
+                                     status, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, 'pending', now(), now())
+                ON CONFLICT (pod_name) DO UPDATE SET
+                    entity_id = EXCLUDED.entity_id,
+                    k8s_pool = EXCLUDED.k8s_pool,
+                    job_labels = EXCLUDED.job_labels,
+                    k8s_image = EXCLUDED.k8s_image,
+                    status = EXCLUDED.status,
+                    created_at = EXCLUDED.created_at
+            """, (pod_name, int(entity_id), k8s_pool, sorted_labels, k8s_image))
+
+
+# --- Pub/Sub ---
+
+_listen_conn = None
+_listen_lock = threading.Lock()
+
+
+def _get_listen_conn():
+    """Get or create a dedicated AUTOCOMMIT connection for LISTEN/NOTIFY."""
+    global _listen_conn
+    if _listen_conn is not None and _listen_conn.closed == 0:
+        return _listen_conn
+    with _listen_lock:
+        if _listen_conn is not None and _listen_conn.closed == 0:
+            return _listen_conn
+        _listen_conn = psycopg2.connect(POSTGRES_URL)
+        _listen_conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
+        with _listen_conn.cursor() as cur:
+            cur.execute(f"SET search_path TO {POSTGRES_SCHEMA}")
+            cur.execute(f"LISTEN {POSTGRES_SCHEMA}_queue_event")
+        return _listen_conn
+
+
+def wait_for_job(timeout: int) -> None:
+    """Block until a new job is published or timeout expires.
+
+    Drains all buffered notifications after waking so the scheduler isn't
+    woken again for events that arrived while it was processing.
+    Matches the Redis pubsub drain pattern.
+    """
+    assert timeout
+    conn = _get_listen_conn()
+    ready = select.select([conn], [], [], timeout)
+    if ready[0]:
+        conn.poll()
+        if conn.notifies:
+            logger.debug("Woken by PG queue event: %d notifications", len(conn.notifies))
+    # Drain all buffered notifications
+    conn.notifies.clear()
+
+
+# --- Internal helpers ---
+
+def _job_row_to_dict(row: dict[str, Any]) -> dict[str, str]:
+    """Convert a PostgreSQL job row to a string-valued dict matching Redis format."""
+    d = {}
+    d["job_id"] = str(row["job_id"])
+    d["status"] = str(row["status"])
+    d["entity_id"] = str(row["entity_id"])
+    d["entity_name"] = row["entity_name"] or ""
+    d["entity_type"] = row["entity_type"] or ""
+    d["repo_full_name"] = row["repo_full_name"] or ""
+    d["installation_id"] = str(row["installation_id"]) if row["installation_id"] else ""
+    d["job_labels"] = json.dumps(row["job_labels"]) if row["job_labels"] is not None else "[]"
+    d["k8s_pool"] = row["k8s_pool"] or ""
+    d["k8s_image"] = row["k8s_image"] or ""
+    d["html_url"] = row["html_url"] or ""
+    if row["created_at"]:
+        d["created_at"] = str(row["created_at"].timestamp())
+    else:
+        d["created_at"] = ""
+    return d

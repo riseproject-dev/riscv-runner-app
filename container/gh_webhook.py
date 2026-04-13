@@ -7,7 +7,7 @@ import requests
 
 from flask import Flask, request, make_response
 
-import db
+import db_migration as db
 import k8s
 from constants import *
 
@@ -371,6 +371,9 @@ if __name__ == "__main__":
         format='%(pathname)s:%(lineno)d::%(funcName)s: [%(levelname)s] %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
+
+    # Bootstrap PostgreSQL: create schema/tables and migrate historical Redis data
+    db.bootstrap_migration()
 
     from waitress import serve
 
