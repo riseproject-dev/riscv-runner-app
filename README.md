@@ -332,6 +332,11 @@ python scw-provision-runner.py --control-plane <control-plane-name> list
 # Reinstall OS on a runner (wipes and re-joins the cluster)
 python scw-provision-runner.py --control-plane <control-plane-name> reinstall <runner-name>
 
+# Reinstall OS on many runners (4 in parallel)
+parallel --tag --line-buffer --halt never --delay 3 -j 4 --tagstring '[{}]' \
+  python3 -u scw-provision-runner.py reinstall {} \
+  ::: riscv-runner-{6,25,27,30,33,34}
+
 # Delete runners
 python scw-provision-runner.py --control-plane <control-plane-name> delete <runner-name>
 ```
