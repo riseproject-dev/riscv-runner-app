@@ -127,7 +127,7 @@ def test_match_labels_missing_platform():
 
 # --- Webhook integration ---
 
-@patch("db_migration.store_job", return_value=True)
+@patch("db.store_job", return_value=True)
 def test_webhook_queued_stores_job(mock_store):
     """Test that a queued webhook stores the job."""
     from gh_webhook import app
@@ -163,7 +163,7 @@ def test_webhook_queued_stores_job(mock_store):
         )
 
 
-@patch("db_migration.store_job", return_value=True)
+@patch("db.store_job", return_value=True)
 def test_webhook_queued_personal_account(mock_store):
     """Test that a queued webhook from a personal account uses repo_id as entity_id."""
     from gh_webhook import app
@@ -199,7 +199,7 @@ def test_webhook_queued_personal_account(mock_store):
         )
 
 
-@patch("db_migration.update_job_running", return_value="pending")
+@patch("db.update_job_running", return_value="pending")
 def test_webhook_in_progress(mock_update):
     """Test that an in_progress webhook updates job status."""
     from gh_webhook import app
@@ -223,7 +223,7 @@ def test_webhook_in_progress(mock_update):
         mock_update.assert_called_once_with(12345)
 
 
-@patch("db_migration.update_job_completed", return_value="running")
+@patch("db.update_job_completed", return_value="running")
 def test_webhook_completed(mock_complete):
     """Test that a completed webhook marks the job as completed."""
     from gh_webhook import app

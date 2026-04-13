@@ -38,7 +38,6 @@ custom:
         GHAPP_ORG_PRIVATE_KEY: ${env:GHAPP_ORG_PRIVATE_KEY}
         GHAPP_PERSONAL_PRIVATE_KEY: ${env:GHAPP_PERSONAL_PRIVATE_KEY}
         K8S_KUBECONFIG: ${env:K8S_KUBECONFIG}
-        REDIS_URL: ${env:REDIS_URL}
         POSTGRES_URL: ${env:POSTGRES_URL}
       env:
         PROD: ${self:custom.${self:provider.stage}.prod}
@@ -50,7 +49,7 @@ custom:
         httpPath: /health
         interval: 10s
         failureThreshold: 3
-      # VPC for Redis and PostgreSQL access
+      # VPC for PostgreSQL access
       privateNetworkId: "58fa41d0-f6a4-4b6f-8f65-b788563842c1"
     scheduler:
       registryImage: ${env:REGISTRY}/${env:IMAGE}:scheduler-${self:custom.${self:provider.stage}.container-tag}
@@ -64,7 +63,6 @@ custom:
         GHAPP_ORG_PRIVATE_KEY: ${env:GHAPP_ORG_PRIVATE_KEY}
         GHAPP_PERSONAL_PRIVATE_KEY: ${env:GHAPP_PERSONAL_PRIVATE_KEY}
         K8S_KUBECONFIG: ${env:K8S_KUBECONFIG}
-        REDIS_URL: ${env:REDIS_URL}
         POSTGRES_URL: ${env:POSTGRES_URL}
       env:
         PROD: ${self:custom.${self:provider.stage}.prod}
@@ -76,5 +74,5 @@ custom:
         httpPath: /health
         interval: 10s
         failureThreshold: 3
-      # VPC for Redis and PostgreSQL access
+      # VPC for PostgreSQL access
       privateNetworkId: "58fa41d0-f6a4-4b6f-8f65-b788563842c1"

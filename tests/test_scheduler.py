@@ -25,7 +25,7 @@ def make_pod(name, phase="Running", entity_id=None, board=None):
 def make_job(job_id, entity_id="1000", entity_name="test-org", k8s_pool="scw-em-rv1",
              status="pending", installation_id="999", repo_full_name="test-org/repo",
              entity_type=EntityType.ORGANIZATION):
-    """Helper to create a mock Redis job hash."""
+    """Helper to create a mock job dict."""
     return {
         "status": status,
         "job_id": str(job_id),

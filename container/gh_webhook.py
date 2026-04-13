@@ -7,7 +7,7 @@ import requests
 
 from flask import Flask, request, make_response
 
-import db_migration as db
+import db
 import k8s
 from constants import *
 
@@ -168,7 +168,7 @@ def match_labels_to_k8s(org_id, repo_full_name, job_labels):
     Map workflow job labels to a k8s pool name and container image.
 
     Returns (k8s_pool, k8s_image) where k8s_pool is the board name string
-    used as Redis pool key and pod label.
+    used as k8s pool key and pod label.
     """
     # Special case(s) for PyTorch org
     if org_id == PYTORCH_ORG_ID or (org_id == RISEPROJECT_DEV_ORG_ID and repo_full_name in ["riseproject-dev/pytorch", "riseproject-dev/executorch"]):
@@ -372,8 +372,8 @@ if __name__ == "__main__":
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
-    # Bootstrap PostgreSQL: create schema/tables and migrate historical Redis data
-    db.bootstrap_migration()
+    # Ensure PostgreSQL schema/tables exist
+    db.ensure_schema()
 
     from waitress import serve
 

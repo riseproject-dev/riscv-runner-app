@@ -19,7 +19,6 @@ mock_constants.GHAPP_ORG_PRIVATE_KEY = "test-key"
 mock_constants.GHAPP_PERSONAL_ID = 3131217
 mock_constants.GHAPP_PERSONAL_PRIVATE_KEY = "test-key-personal"
 mock_constants.GHAPP_WEBHOOK_SECRET = "test-webhook-secret"
-mock_constants.REDIS_URL = "rediss://localhost:6379"
 mock_constants.POSTGRES_URL = "postgresql://test:test@localhost:5432/testdb"
 mock_constants.POSTGRES_SCHEMA = "staging"
 mock_constants.POSTGRES_MAXCONN = 10

@@ -6,8 +6,8 @@ import threading
 import time
 import traceback
 
-import db_migration as db
-from db_migration import DuplicateRunnerNameException
+import db
+from db import DuplicateRunnerNameException
 import k8s
 import github as gh
 from constants import *
@@ -271,7 +271,7 @@ if __name__ == "__main__":
         datefmt='%Y-%m-%d %H:%M:%S'
     )
 
-    # Ensure PostgreSQL schema/tables exist (webhook does the full bootstrap migration)
+    # Ensure PostgreSQL schema/tables exist
     db.ensure_schema()
 
     def http_worker():

@@ -114,7 +114,6 @@ jobs:
           GHAPP_ORG_PRIVATE_KEY: ${{ secrets.GHAPP_ORG_PRIVATE_KEY }}
           GHAPP_PERSONAL_PRIVATE_KEY: ${{ secrets.GHAPP_PERSONAL_PRIVATE_KEY }}
           K8S_KUBECONFIG: ${{ secrets.K8S_KUBECONFIG }}
-          REDIS_URL: ${{ secrets.REDIS_URL }}
           POSTGRES_URL: ${{ secrets.POSTGRES_URL }}
 
       - name: Health check
