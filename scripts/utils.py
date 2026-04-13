@@ -16,7 +16,7 @@ from scaleway.instance.v1.custom_api import InstanceUtilsV1API
 from scaleway.instance.v1.types import VolumeServerTemplate, VolumeVolumeType, ServerAction
 from scaleway.baremetal.v1 import BaremetalV1API
 from scaleway.baremetal.v1.content import SERVER_TRANSIENT_STATUSES, SERVER_INSTALL_TRANSIENT_STATUSES
-from scaleway.baremetal.v1.types import CreateServerRequestInstall
+from scaleway.baremetal.v1.types import CreateServerRequestInstall, OfferSubscriptionPeriod
 from scaleway.baremetal.v3 import BaremetalV3PrivateNetworkAPI
 from scaleway.ipam.v1 import IpamV1API
 from scaleway.ipam.v1.types import ResourceType
@@ -157,9 +157,8 @@ class BareMetal:
     @staticmethod
     def create(hostname, server_type, os_id, tags=None):
         # Look up the offer ID by name
-        offers_resp = baremetal_api.list_offers(zone=ZONE)
         offer_id = None
-        for offer in offers_resp.offers:
+        for offer in baremetal_api.list_offers(zone=ZONE, subscription_period=OfferSubscriptionPeriod.MONTHLY).offers:
             if offer.name == server_type:
                 offer_id = offer.id
                 break
