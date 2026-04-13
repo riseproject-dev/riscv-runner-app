@@ -274,19 +274,25 @@ def update_job_completed(job_id: int) -> str | None:
 
 # --- Worker operations ---
 
-def get_pool_demand(entity_id: int, k8s_pool: str) -> tuple[int, int]:
-    """Return (job_count, worker_count) for a pool."""
+def get_pool_demand(entity_id: int, job_labels: list[str]) -> tuple[int, int]:
+    """Return (job_count, worker_count) for an entity + label set.
+
+    Matches demand and supply by (entity_id, job_labels) rather than (entity_id, k8s_pool).
+    This fixes the bug where different label sets mapping to the same pool cause stuck workers.
+    Labels are sorted internally for consistent JSONB equality.
+    """
+    sorted_labels = json.dumps(sorted(job_labels))
     with _get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT
                     (SELECT COUNT(*) FROM jobs
-                     WHERE entity_id = %s AND k8s_pool = %s
+                     WHERE entity_id = %s AND job_labels = %s
                        AND (status = 'pending' OR status = 'running')) as job_count,
                     (SELECT COUNT(*) FROM workers
-                     WHERE entity_id = %s AND k8s_pool = %s
+                     WHERE entity_id = %s AND job_labels = %s
                        AND (status = 'pending' OR status = 'running')) as worker_count
-            """, (int(entity_id), k8s_pool, int(entity_id), k8s_pool))
+            """, (int(entity_id), sorted_labels, int(entity_id), sorted_labels))
             row = cur.fetchone()
     return row[0], row[1]
 
@@ -317,9 +323,9 @@ def get_pending_jobs() -> list[str]:
 
 
 def add_worker(entity_id: int, k8s_pool: str, pod_name: str,
-               job_labels: list[str] | None = None, k8s_image: str | None = None) -> None:
+               job_labels: list[str], k8s_image: str) -> None:
     """Add a worker. Raises DuplicateRunnerNameException on pod_name collision."""
-    sorted_labels = json.dumps(sorted(job_labels)) if job_labels else None
+    sorted_labels = json.dumps(sorted(job_labels))
 
     with _get_conn() as conn:
         with conn.cursor() as cur:
@@ -524,60 +530,6 @@ def mark_orphaned_workers_completed(active_pod_names: set[str], known_worker_pod
                 WHERE pod_name = ANY(%s) AND (status = 'pending' OR status = 'running')
             """, (orphaned,))
     logger.debug("Marked %d orphaned workers as completed", len(orphaned))
-
-
-# --- Upsert for migration ---
-
-def upsert_job(job_id: int | str, status: str, entity_id: int | str, entity_name: str,
-               entity_type: str, repo_full_name: str, installation_id: int | str,
-               job_labels: list[str] | str, k8s_pool: str, k8s_image: str,
-               html_url: str | None, created_at: float | str) -> None:
-    """Insert or update a job from Redis migration. Converges state on conflict."""
-    sorted_labels = json.dumps(sorted(job_labels)) if isinstance(job_labels, list) else job_labels
-
-    with _get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO jobs (job_id, status, entity_id, entity_name, entity_type,
-                                  repo_full_name, installation_id, job_labels, k8s_pool,
-                                  k8s_image, html_url, created_at, updated_at)
-                VALUES (%s, %s::status_enum, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        to_timestamp(%s), to_timestamp(%s))
-                ON CONFLICT (job_id) DO UPDATE SET
-                    status = EXCLUDED.status,
-                    entity_id = EXCLUDED.entity_id,
-                    entity_name = EXCLUDED.entity_name,
-                    entity_type = EXCLUDED.entity_type,
-                    repo_full_name = EXCLUDED.repo_full_name,
-                    installation_id = EXCLUDED.installation_id,
-                    job_labels = EXCLUDED.job_labels,
-                    k8s_pool = EXCLUDED.k8s_pool,
-                    k8s_image = EXCLUDED.k8s_image,
-                    html_url = EXCLUDED.html_url
-            """, (int(job_id), status, int(entity_id), entity_name, entity_type,
-                  repo_full_name, int(installation_id), sorted_labels, k8s_pool,
-                  k8s_image, html_url, float(created_at), float(created_at)))
-
-
-def upsert_worker(pod_name: str, entity_id: int | str, k8s_pool: str,
-                  job_labels: list[str] | None = None, k8s_image: str | None = None) -> None:
-    """Insert a worker from Redis migration. Converges state on conflict."""
-    sorted_labels = json.dumps(sorted(job_labels)) if job_labels else None
-
-    with _get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO workers (pod_name, entity_id, k8s_pool, job_labels, k8s_image,
-                                     status, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, 'pending', now(), now())
-                ON CONFLICT (pod_name) DO UPDATE SET
-                    entity_id = EXCLUDED.entity_id,
-                    k8s_pool = EXCLUDED.k8s_pool,
-                    job_labels = EXCLUDED.job_labels,
-                    k8s_image = EXCLUDED.k8s_image,
-                    status = EXCLUDED.status,
-                    created_at = EXCLUDED.created_at
-            """, (pod_name, int(entity_id), k8s_pool, sorted_labels, k8s_image))
 
 
 # --- Pub/Sub ---

@@ -52,7 +52,7 @@ The system is split into two containers:
 - **gh-webhook** receives GitHub webhooks, validates them, and writes job state to Redis and PostgreSQL (dual-write). It makes no GitHub API or k8s calls.
 - **scheduler** reads job state from Redis (source of truth during migration), provisions runner pods on k8s, reconciles with GitHub, and cleans up completed pods.
 
-State is stored in both Redis (legacy, source of truth) and PostgreSQL (new, dual-write target). The `db_migration.py` wrapper writes to both and compares reads to verify consistency. See "Database migration" below.
+State is stored in both PostgreSQL (source of truth) and Redis (legacy, kept in sync for rollback safety). The `db_migration.py` wrapper writes to both and reads from PostgreSQL. Redis will be removed in Phase 3.
 
 ```
 GitHub (workflow_job webhook)
@@ -63,22 +63,22 @@ gh-webhook (gh_webhook.py)
   |  - Verifies webhook signature
   |  - Validates labels, determines entity type (org or personal)
   |  - Resolves (entity_id, labels) -> (k8s_pool, k8s_image)
-  |  - Writes job to Redis + PostgreSQL (dual-write via db_migration.py)
-  |  - Bootstraps PostgreSQL from Redis on startup
+  |  - Writes job to PostgreSQL + Redis (dual-write via db_migration.py)
+  |  - Verifies PostgreSQL has all Redis data on startup
   |  - Serves /usage, /history
   |  - NO GitHub API calls, NO k8s calls
   |
   v
-Redis (demand + supply state — source of truth during migration)
-  |  - Job hashes: per-job metadata (pending state derived from status field)
-  |  - Pool sets: jobs (demand) and workers (supply) per (entity, k8s_pool)
-  |  - queue_event pubsub channel: wakes scheduler on new jobs
-  |
-PostgreSQL (dual-write target — will become source of truth)
+PostgreSQL (source of truth)
   |  - jobs table: all job metadata with status_enum, sorted JSONB labels
   |  - workers table: never deleted, status tracked (pending/running/completed)
   |  - failure_info: exhaustive diagnostics for failed pods
-  |  - LISTEN/NOTIFY: will replace Redis pubsub in Phase 2
+  |  - LISTEN/NOTIFY: wakes scheduler on new jobs
+  |
+Redis (legacy, kept in sync for rollback safety — will be removed in Phase 3)
+  |  - Job hashes: per-job metadata
+  |  - Pool sets: jobs (demand) and workers (supply) per (entity, k8s_pool)
+  |  - queue_event pubsub channel (no longer used for waking scheduler)
   |
   v
 Scheduler (scheduler.py)
@@ -174,7 +174,7 @@ add_worker() reserves name in DB (status=pending)
 
 Workers are never deleted from PostgreSQL. The `status` field tracks the lifecycle. Historical workers with `failure_info` are available for post-mortem debugging.
 
-### Redis schema (source of truth during migration)
+### Redis schema (legacy, kept for rollback safety)
 
 All keys are prefixed with `prod:` or `staging:` depending on environment.
 
@@ -189,7 +189,7 @@ All keys are prefixed with `prod:` or `staging:` depending on environment.
 
 **Job hash fields**: `job_id`, `entity_id`, `entity_name`, `entity_type` (Organization/User), `repo_full_name`, `installation_id`, `job_labels` (JSON), `k8s_pool`, `k8s_image`, `html_url`, `status` (pending/running/completed), `created_at`
 
-### PostgreSQL schema (dual-write target, will become source of truth)
+### PostgreSQL schema (source of truth)
 
 Tables live in a `prod` or `staging` schema (same database, isolated by `SET search_path`).
 
@@ -232,13 +232,15 @@ Status transitions are forward-only: `pending -> running -> completed`. All UPDA
 ### Demand matching algorithm
 
 ```
-demand  = SCARD(pool:{entity_id}:{k8s_pool}:jobs)      # pending + running jobs
-supply  = SCARD(pool:{entity_id}:{k8s_pool}:workers)   # provisioned pods
+demand  = COUNT(jobs WHERE entity_id = ? AND job_labels = ? AND status IN (pending, running))
+supply  = COUNT(workers WHERE entity_id = ? AND job_labels = ? AND status IN (pending, running))
 deficit = demand - supply
 ```
 
+Demand and supply are matched by `(entity_id, job_labels)` — not by `k8s_pool`. This prevents the bug where different label sets mapping to the same pool cause stuck workers (e.g., PyTorch `linux.riscv64.xlarge` vs `ubuntu-24.04-riscv` both map to `scw-em-rv1` but need separate runners with matching labels).
+
 The scheduler iterates pending jobs in FIFO order. For each job:
-1. If `demand <= supply` for its pool: skip (demand already met)
+1. If `demand <= supply` for its `(entity_id, job_labels)`: skip (demand already met)
 2. If entity's total workers across all pools >= `max_workers`: skip
 3. If no k8s node capacity for the pool's node selector: skip
 4. Otherwise: provision a new runner
@@ -277,9 +279,9 @@ Per-entity configuration is defined in `ENTITY_CONFIG` in `constants.py`, keyed 
 | `container/gh_webhook.py` | Flask webhook handler -- validates requests, writes to Redis and PostgreSQL |
 | `container/scheduler.py` | Scheduler -- GH reconciliation, demand matching, cleanup, worker status sync |
 | `container/k8s.py` | Kubernetes pod provisioning, deletion, capacity checks, failure info collection |
-| `container/db.py` | Redis operations (source of truth during migration) |
-| `container/pg.py` | PostgreSQL operations (dual-write target, will become source of truth) |
-| `container/db_migration.py` | Dual-write migration wrapper -- writes to both Redis and PostgreSQL, compares reads |
+| `container/db.py` | Redis operations (legacy, kept for rollback safety) |
+| `container/pg.py` | PostgreSQL operations (source of truth) |
+| `container/db_migration.py` | Dual-write wrapper -- writes to PostgreSQL first, then Redis; reads from PostgreSQL |
 | `container/github.py` | GitHub API functions (auth, runner groups, JIT config, job status) |
 | `container/Dockerfile.gh_webhook` | Docker image for the gh-webhook container |
 | `container/Dockerfile.scheduler` | Docker image for the scheduler container |
@@ -288,10 +290,10 @@ Per-entity configuration is defined in `ENTITY_CONFIG` in `constants.py`, keyed 
 
 | Service | Product | Purpose |
 |---------|---------|---------|
-| gh-webhook | Scaleway Container | Receives webhooks, writes job state to Redis + PostgreSQL |
+| gh-webhook | Scaleway Container | Receives webhooks, writes job state to PostgreSQL + Redis |
 | scheduler | Scaleway Container | Demand matching, pod provisioning, cleanup, worker status sync |
-| State store (legacy) | Scaleway Managed Redis | Job and worker state, pubsub (source of truth during migration) |
-| State store (new) | Scaleway Managed Database | PostgreSQL: jobs + workers tables (dual-write target) |
+| State store | Scaleway Managed Database | PostgreSQL: jobs + workers tables (source of truth) |
+| State store (legacy) | Scaleway Managed Redis | Kept in sync for rollback safety (will be removed in Phase 3) |
 | Runner pods | Self-hosted k8s clusters | Ephemeral RISC-V runner pods |
 
 Production and staging each have their own k8s cluster, provisioned via the `scripts/` tooling. Four containers are deployed total:

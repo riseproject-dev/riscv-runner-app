@@ -23,11 +23,11 @@ POLL_INTERVAL = 15
 
 def gh_reconcile():
     """
-    Reconcile Redis state with GitHub API.
+    Reconcile database state with GitHub API.
 
     For each active job, check GitHub for its actual status. If GitHub says
-    completed but Redis disagrees, mark it completed. If GitHub says in_progress
-    but Redis says pending, update to running.
+    completed but database disagrees, mark it completed. If GitHub says in_progress
+    but database says pending, update to running.
     """
     jobs = db.get_all_jobs()
     if not jobs:
@@ -62,12 +62,12 @@ def gh_reconcile():
                 logger.error("Failed to get status for job %s: %s", job_id, e)
                 continue
 
-            redis_status = job.get("status")
-            if gh_status == "completed" and redis_status != "completed":
-                logger.info("GH reconcile: job %s is completed on GitHub (was %s in Redis)", job_id, redis_status)
+            db_status = job.get("status")
+            if gh_status == "completed" and db_status != "completed":
+                logger.info("GH reconcile: job %s is completed on GitHub (was %s in DB)", job_id, db_status)
                 db.update_job_completed(job_id)
-            elif gh_status == "in_progress" and redis_status == "pending":
-                logger.info("GH reconcile: job %s is in_progress on GitHub (was pending in Redis)", job_id)
+            elif gh_status == "in_progress" and db_status == "pending":
+                logger.info("GH reconcile: job %s is in_progress on GitHub (was pending in DB)", job_id)
                 db.update_job_running(job_id)
 
 
@@ -113,11 +113,11 @@ def demand_match():
             logger.warning("Job %s missing required fields, skipping", job_id)
             continue
 
-        # Check pool demand vs supply
-        job_count, worker_count = db.get_pool_demand(entity_id, k8s_pool)
+        # Check demand vs supply (matched by entity_id + job_labels, not k8s_pool)
+        job_count, worker_count = db.get_pool_demand(entity_id, labels)
         if job_count <= worker_count:
-            logger.info("Job %s: pool %s:%s demand met (jobs=%d, workers=%d)",
-                        job_id, entity_id, k8s_pool, job_count, worker_count)
+            logger.info("Job %s: entity %s labels %s demand met (jobs=%d, workers=%d)",
+                        job_id, entity_id, labels, job_count, worker_count)
             continue
 
         # Check max_workers cap
@@ -190,11 +190,11 @@ def cleanup_pods():
       Failed    -> worker 'completed' (at least one container failed)
       Unknown   -> no change          (pod state indeterminate, keep current)
     """
-    # First get the list of workers from redis, then list pods from k8s. This is
+    # First get the list of workers from the database, then list pods from k8s. This is
     # to avoid the race condition where we delete a pod that was just provisioned
-    # but not yet added to Redis, which would cause it to be recreated immediately.
+    # but not yet added to the database, which would cause it to be recreated immediately.
     # By getting the list of workers first, we ensure that we only delete pods
-    # that are known to Redis as active workers.
+    # that are known to the database as active workers.
     workers = list(db.iter_workers())
     pods = k8s.list_pods()
 

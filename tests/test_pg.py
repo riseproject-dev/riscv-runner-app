@@ -189,7 +189,7 @@ def test_get_pool_demand(mock_pool_fn):
     mock_pool_fn.return_value = pool
     cur.fetchone.return_value = (3, 1)
 
-    jobs, workers = get_pool_demand(1000, "scw-em-rv1")
+    jobs, workers = get_pool_demand(1000, ["ubuntu-24.04-riscv"])
 
     assert jobs == 3
     assert workers == 1
@@ -229,7 +229,7 @@ def test_add_worker_duplicate_raises(mock_pool_fn):
     cur.rowcount = 0  # collision
 
     with pytest.raises(DuplicateRunnerNameException):
-        add_worker(1000, "scw-em-rv1", "pod-1")
+        add_worker(1000, "scw-em-rv1", "pod-1", job_labels=["rise"], k8s_image="img:latest")
 
 
 @patch("pg._init_pool")

@@ -346,7 +346,7 @@ def webhook():
         elif action == "in_progress":
             prev_status = db.update_job_running(job_id)
             if prev_status is None:
-                logger.warning("Job %s not found in Redis on in_progress event", job_id)
+                logger.warning("Job %s not found on in_progress event", job_id)
                 return f"Job {job_id} not found."
             logger.info("Job %s marked running (was %s)", job_id, prev_status)
             return f"Job {job_id} marked running (was {prev_status})."
@@ -354,7 +354,7 @@ def webhook():
         elif action == "completed":
             prev_status = db.update_job_completed(job_id)
             if prev_status is None:
-                logger.warning("Job %s not found in Redis on completed event", job_id)
+                logger.warning("Job %s not found on completed event", job_id)
                 return f"Job {job_id} not found."
             return f"Job {job_id} completed (was {prev_status})."
 

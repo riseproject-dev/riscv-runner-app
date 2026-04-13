@@ -1,15 +1,14 @@
-"""Dual-write migration wrapper: writes to both Redis and PostgreSQL, reads from Redis.
+"""Dual-write migration wrapper: writes to both PostgreSQL and Redis, reads from PostgreSQL.
 
-Phase 1: Redis is source of truth. Every read compares Redis vs PostgreSQL and logs
-mismatches. Every write goes to both databases. PostgreSQL failures are logged but
-don't affect application behavior.
+Phase 2: PostgreSQL is source of truth. All reads come from PostgreSQL. All writes go
+to PostgreSQL first (errors propagate), then to Redis (errors logged as warnings).
+Redis is kept in sync for rollback safety.
 
-The bootstrap_migration() function copies all historical Redis data into PostgreSQL
-at startup (idempotent via ON CONFLICT DO NOTHING).
+The bootstrap_migration() function verifies that all Redis data exists in PostgreSQL
+and logs any discrepancies (does not insert).
 """
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, Iterator
 
@@ -28,265 +27,183 @@ def ensure_schema() -> None:
 
 
 def bootstrap_migration() -> None:
-    """Migrate all Redis data to PostgreSQL. Idempotent (ON CONFLICT DO NOTHING)."""
+    """Verify all Redis data exists in PostgreSQL. Logs discrepancies but does not insert."""
     ensure_schema()
-    _migrate_jobs()
-    _migrate_workers()
-    logger.info("Bootstrap migration complete")
+    _verify_jobs()
+    _verify_workers()
+    logger.info("Bootstrap verification complete")
 
 
 _ZOMBIE_JOB_ID = "65886322031"  # Ancient zombie job with incompatible schema (payload/k8s_spec fields)
 
 
-def _migrate_jobs() -> None:
-    """Read all job hashes from Redis, upsert into PostgreSQL."""
-    jobs = redis_db.get_all_jobs()
-    migrated = 0
-    skipped = 0
-    for job in jobs:
+def _verify_jobs() -> None:
+    """Check that all Redis jobs exist in PostgreSQL. Log any missing."""
+    redis_jobs = redis_db.get_all_jobs()
+    missing = 0
+    checked = 0
+    for job in redis_jobs:
         job_id = job.get("job_id")
-
-        # Drop the 1 known zombie job with incompatible schema
+        if not job_id:
+            continue
         if str(job_id) == _ZOMBIE_JOB_ID:
-            logger.warning("MIGRATION SKIP job_id=%s reason=zombie_incompatible_schema", job_id)
-            skipped += 1
             continue
 
-        # Handle legacy field mappings (staging jobs with org_id/org_name)
-        entity_id = job.get("entity_id") or job.get("org_id")
-        entity_name = job.get("entity_name") or job.get("org_name")
-        entity_type = job.get("entity_type") or ("Organization" if job.get("org_id") else None)
+        checked += 1
+        pg_job = pg_db.get_job(job_id)
+        if not pg_job:
+            logger.warning("VERIFY MISSING job_id=%s status=%s entity_id=%s — exists in Redis but not in PostgreSQL",
+                           job_id, job.get("status"), job.get("entity_id") or job.get("org_id"))
+            missing += 1
 
-        if not job_id or not entity_id:
-            logger.warning("MIGRATION SKIP job_id=%s reason=missing_required_fields entity_id=%s", job_id, entity_id)
-            skipped += 1
-            continue
-
-        try:
-            raw_labels = json.loads(job.get("job_labels", "[]"))
-        except (json.JSONDecodeError, TypeError):
-            raw_labels = []
-
-        try:
-            pg_db.upsert_job(
-                job_id=job_id,
-                status=job.get("status", "completed"),
-                entity_id=entity_id,
-                entity_name=entity_name or "",
-                entity_type=entity_type or "",
-                repo_full_name=job.get("repo_full_name", ""),
-                installation_id=job.get("installation_id") or 0,
-                job_labels=raw_labels,
-                k8s_pool=job.get("k8s_pool", ""),
-                k8s_image=job.get("k8s_image", ""),
-                html_url=job.get("html_url"),
-                created_at=job.get("created_at", "0"),
-            )
-            migrated += 1
-        except Exception as e:
-            logger.error("MIGRATION ERROR job_id=%s error=%s", job_id, e)
-            skipped += 1
-
-    logger.info("MIGRATION JOBS migrated=%d skipped=%d total=%d", migrated, skipped, len(jobs))
+    logger.info("VERIFY JOBS checked=%d missing=%d total_redis=%d", checked, missing, len(redis_jobs))
 
 
-def _migrate_workers() -> None:
-    """Read all worker sets from Redis, upsert into PostgreSQL."""
-    migrated = 0
-    for entity_id, k8s_pool, pod_name in redis_db.iter_workers():
-        try:
-            pg_db.upsert_worker(pod_name, entity_id, k8s_pool)
-            migrated += 1
-            logger.info("MIGRATION WORKER pod_name=%s entity_id=%s k8s_pool=%s", pod_name, entity_id, k8s_pool)
-        except Exception as e:
-            logger.error("MIGRATION ERROR pod_name=%s error=%s", pod_name, e)
-    logger.info("MIGRATION WORKERS migrated=%d", migrated)
+def _verify_workers() -> None:
+    """Check that all Redis workers exist in PostgreSQL. Log any missing."""
+    redis_workers = set(redis_db.iter_workers())
+    pg_workers = set(pg_db.iter_workers())
+    only_redis = redis_workers - pg_workers
+    if only_redis:
+        for entity_id, k8s_pool, pod_name in only_redis:
+            logger.warning("VERIFY MISSING worker pod_name=%s entity_id=%s k8s_pool=%s — exists in Redis but not in PostgreSQL",
+                           pod_name, entity_id, k8s_pool)
+    logger.info("VERIFY WORKERS redis=%d pg=%d missing_from_pg=%d", len(redis_workers), len(pg_workers), len(only_redis))
 
 
-# --- Wrapped job operations ---
+# --- Write operations (PG first, Redis second) ---
 
 def store_job(job_id: int, entity_id: int, entity_name: str, entity_type: str | Any,
               repo_full_name: str, installation_id: int, labels: list[str],
               k8s_pool: str, k8s_image: str, html_url: str) -> bool:
-    """Store a new job. Writes to both Redis and PostgreSQL. Returns Redis result."""
-    redis_result = redis_db.store_job(
+    """Store a new job. Writes to PostgreSQL first (source of truth), then Redis."""
+    # PostgreSQL first — errors propagate
+    pg_result = pg_db.store_job(
         job_id, entity_id, entity_name, entity_type, repo_full_name,
         installation_id, labels, k8s_pool, k8s_image, html_url)
 
+    # Redis second — errors logged as warnings
     try:
-        pg_result = pg_db.store_job(
+        redis_db.store_job(
             job_id, entity_id, entity_name, entity_type, repo_full_name,
             installation_id, labels, k8s_pool, k8s_image, html_url)
-        if redis_result != pg_result:
-            logger.error("MIGRATION MISMATCH store_job(%s): redis=%s pg=%s",
-                         job_id, redis_result, pg_result)
     except Exception as e:
-        logger.error("MIGRATION ERROR store_job(%s) pg failed: %s", job_id, e)
+        logger.warning("REDIS WARNING store_job(%s) redis failed: %s", job_id, e)
 
-    return redis_result
+    return pg_result
 
 
 def update_job_running(job_id: int) -> str | None:
-    """Update job status to running. Writes to both. Returns Redis result."""
-    redis_result = redis_db.update_job_running(job_id)
+    """Update job status to running. PostgreSQL first, then Redis."""
+    pg_result = pg_db.update_job_running(job_id)
 
     try:
-        pg_result = pg_db.update_job_running(job_id)
-        if redis_result != pg_result:
-            logger.error("MIGRATION MISMATCH update_job_running(%s): redis=%s pg=%s",
-                         job_id, redis_result, pg_result)
+        redis_db.update_job_running(job_id)
     except Exception as e:
-        logger.error("MIGRATION ERROR update_job_running(%s) pg failed: %s", job_id, e)
+        logger.warning("REDIS WARNING update_job_running(%s) redis failed: %s", job_id, e)
 
-    return redis_result
+    return pg_result
 
 
 def update_job_completed(job_id: int) -> str | None:
-    """Update job status to completed. Writes to both. Returns Redis result."""
-    redis_result = redis_db.update_job_completed(job_id)
+    """Update job status to completed. PostgreSQL first, then Redis."""
+    pg_result = pg_db.update_job_completed(job_id)
 
     try:
-        pg_result = pg_db.update_job_completed(job_id)
-        if redis_result != pg_result:
-            logger.error("MIGRATION MISMATCH update_job_completed(%s): redis=%s pg=%s",
-                         job_id, redis_result, pg_result)
+        redis_db.update_job_completed(job_id)
     except Exception as e:
-        logger.error("MIGRATION ERROR update_job_completed(%s) pg failed: %s", job_id, e)
+        logger.warning("REDIS WARNING update_job_completed(%s) redis failed: %s", job_id, e)
 
-    return redis_result
+    return pg_result
 
 
-# --- Wrapped worker operations ---
+# --- Worker operations ---
 
 def add_worker(entity_id: int, k8s_pool: str, pod_name: str,
-               job_labels: list[str] | None = None, k8s_image: str | None = None) -> None:
-    """Add a worker. Writes to PostgreSQL first (for collision detection), then Redis.
+               job_labels: list[str], k8s_image: str) -> None:
+    """Add a worker. PostgreSQL first (collision detection), then Redis.
 
     Raises DuplicateRunnerNameException if pod_name already exists in PostgreSQL.
     """
-    # PostgreSQL first — detects name collisions before any k8s pod is created
-    pg_db.add_worker(entity_id, k8s_pool, pod_name, job_labels=job_labels, k8s_image=k8s_image)
+    # PostgreSQL first — detects name collisions, errors propagate
+    pg_db.add_worker(entity_id, k8s_pool, pod_name, job_labels, k8s_image)
 
-    # Redis second (SADD is idempotent, won't detect collisions)
-    redis_db.add_worker(entity_id, k8s_pool, pod_name)
+    # Redis second
+    try:
+        redis_db.add_worker(entity_id, k8s_pool, pod_name)
+    except Exception as e:
+        logger.warning("REDIS WARNING add_worker(%s) redis failed: %s", pod_name, e)
 
 
 def remove_worker(entity_id: int | str, k8s_pool: str, pod_name: str) -> None:
-    """Mark worker as completed. Writes to both."""
-    redis_db.remove_worker(entity_id, k8s_pool, pod_name)
+    """Mark worker as completed. PostgreSQL first, then Redis."""
+    pg_db.remove_worker(entity_id, k8s_pool, pod_name)
 
     try:
-        pg_db.remove_worker(entity_id, k8s_pool, pod_name)
+        redis_db.remove_worker(entity_id, k8s_pool, pod_name)
     except Exception as e:
-        logger.error("MIGRATION ERROR remove_worker(%s) pg failed: %s", pod_name, e)
+        logger.warning("REDIS WARNING remove_worker(%s) redis failed: %s", pod_name, e)
 
 
-# --- Wrapped read operations ---
+# --- Read operations (from PostgreSQL) ---
 
-def get_pool_demand(entity_id: int | str, k8s_pool: str) -> tuple[int, int]:
-    """Return (job_count, worker_count). Reads from Redis, compares with PostgreSQL."""
-    redis_result = redis_db.get_pool_demand(entity_id, k8s_pool)
-
-    try:
-        pg_result = pg_db.get_pool_demand(entity_id, k8s_pool)
-        if redis_result != pg_result:
-            logger.error("MIGRATION MISMATCH get_pool_demand(%s, %s): redis=%s pg=%s",
-                         entity_id, k8s_pool, redis_result, pg_result)
-    except Exception as e:
-        logger.error("MIGRATION ERROR get_pool_demand(%s, %s) pg failed: %s",
-                     entity_id, k8s_pool, e)
-
-    return redis_result
+def get_pool_demand(entity_id: int | str, job_labels: list[str]) -> tuple[int, int]:
+    """Return (job_count, worker_count) for an entity + label set. From PostgreSQL."""
+    return pg_db.get_pool_demand(int(entity_id), job_labels)
 
 
 def get_total_workers_for_entity(entity_id: int | str) -> int:
-    """Return total worker count. Reads from Redis, compares with PostgreSQL."""
-    redis_result = redis_db.get_total_workers_for_entity(entity_id)
-
-    try:
-        pg_result = pg_db.get_total_workers_for_entity(entity_id)
-        if redis_result != pg_result:
-            logger.error("MIGRATION MISMATCH get_total_workers_for_entity(%s): redis=%s pg=%s",
-                         entity_id, redis_result, pg_result)
-    except Exception as e:
-        logger.error("MIGRATION ERROR get_total_workers_for_entity(%s) pg failed: %s",
-                     entity_id, e)
-
-    return redis_result
+    """Return total worker count. From PostgreSQL."""
+    return pg_db.get_total_workers_for_entity(int(entity_id))
 
 
 def get_pending_jobs() -> list[str]:
-    """Return pending job IDs. Reads from Redis, compares with PostgreSQL."""
-    redis_result = redis_db.get_pending_jobs()
-
-    try:
-        pg_result = pg_db.get_pending_jobs()
-        if redis_result != pg_result:
-            logger.error("MIGRATION MISMATCH get_pending_jobs: redis=%s pg=%s",
-                         redis_result, pg_result)
-    except Exception as e:
-        logger.error("MIGRATION ERROR get_pending_jobs pg failed: %s", e)
-
-    return redis_result
+    """Return pending job IDs in FIFO order. From PostgreSQL."""
+    return pg_db.get_pending_jobs()
 
 
 def iter_workers() -> Iterator[tuple[str, str, str]]:
-    """Yield (entity_id, k8s_pool, pod_name) for active workers. From Redis."""
-    # Compare as sets (order doesn't matter)
-    redis_workers = list(redis_db.iter_workers())
-
-    try:
-        pg_workers = list(pg_db.iter_workers())
-        redis_set = set(redis_workers)
-        pg_set = set(pg_workers)
-        if redis_set != pg_set:
-            only_redis = redis_set - pg_set
-            only_pg = pg_set - redis_set
-            logger.error("MIGRATION MISMATCH iter_workers: only_in_redis=%s only_in_pg=%s",
-                         only_redis, only_pg)
-    except Exception as e:
-        logger.error("MIGRATION ERROR iter_workers pg failed: %s", e)
-
-    return iter(redis_workers)
+    """Yield (entity_id, k8s_pool, pod_name) for active workers. From PostgreSQL."""
+    return pg_db.iter_workers()
 
 
 def get_job(job_id: int | str) -> dict[str, str]:
-    """Return job dict. From Redis."""
-    return redis_db.get_job(job_id)
+    """Return job dict. From PostgreSQL."""
+    return pg_db.get_job(int(job_id))
 
 
 def cleanup_job(job_id: int | str) -> None:
-    """Remove a completed job hash. From both."""
-    redis_db.cleanup_job(job_id)
+    """Remove a completed job. From both."""
+    pg_db.cleanup_job(int(job_id))
     try:
-        pg_db.cleanup_job(job_id)
+        redis_db.cleanup_job(job_id)
     except Exception as e:
-        logger.error("MIGRATION ERROR cleanup_job(%s) pg failed: %s", job_id, e)
+        logger.warning("REDIS WARNING cleanup_job(%s) redis failed: %s", job_id, e)
 
 
 def get_all_active_job_ids() -> set[str]:
-    """Return all active job IDs. From Redis."""
-    return redis_db.get_all_active_job_ids()
+    """Return all active job IDs. From PostgreSQL."""
+    return pg_db.get_all_active_job_ids()
 
 
 def get_pool_usage() -> dict:
-    """Return pool usage. From Redis."""
-    return redis_db.get_pool_usage()
+    """Return pool usage. From PostgreSQL."""
+    return pg_db.get_pool_usage()
 
 
 def get_all_jobs() -> list[dict[str, str]]:
-    """Return all jobs. From Redis."""
-    return redis_db.get_all_jobs()
+    """Return all jobs. From PostgreSQL."""
+    return pg_db.get_all_jobs()
 
 
 def iter_completed_jobs():
-    """Yield completed jobs. From Redis."""
-    return redis_db.iter_completed_jobs()
+    """Yield completed jobs. From PostgreSQL."""
+    return pg_db.iter_completed_jobs()
 
 
 def wait_for_job(timeout: int) -> None:
-    """Block until a new job is published or timeout. Uses Redis pub/sub in Phase 1."""
-    return redis_db.wait_for_job(timeout)
+    """Block until a new job is published or timeout. Uses PostgreSQL LISTEN/NOTIFY."""
+    return pg_db.wait_for_job(timeout)
 
 
 # --- PostgreSQL-only operations (used by scheduler for worker status sync) ---
@@ -294,15 +211,9 @@ def wait_for_job(timeout: int) -> None:
 def sync_worker_status(pods: list[Any], failure_info_by_pod: dict[str, dict]) -> None:
     """Update worker status in PostgreSQL from k8s pod phases."""
     assert failure_info_by_pod is not None, "failure_info_by_pod must be a dict, not None"
-    try:
-        pg_db.sync_worker_status(pods, failure_info_by_pod)
-    except Exception as e:
-        logger.error("MIGRATION ERROR sync_worker_status pg failed: %s", e)
+    pg_db.sync_worker_status(pods, failure_info_by_pod)
 
 
 def mark_orphaned_workers_completed(active_pod_names: set[str], known_worker_pod_names: list[str]) -> None:
     """Mark specific orphaned workers as completed in PostgreSQL."""
-    try:
-        pg_db.mark_orphaned_workers_completed(active_pod_names, known_worker_pod_names)
-    except Exception as e:
-        logger.error("MIGRATION ERROR mark_orphaned_workers_completed pg failed: %s", e)
+    pg_db.mark_orphaned_workers_completed(active_pod_names, known_worker_pod_names)
