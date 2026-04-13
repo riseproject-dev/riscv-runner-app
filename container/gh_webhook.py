@@ -1,4 +1,3 @@
-import datetime
 import hashlib
 import hmac
 import json
@@ -8,7 +7,6 @@ import requests
 from flask import Flask, request, make_response
 
 import db
-import k8s
 from constants import *
 
 app = Flask(__name__)
@@ -196,81 +194,11 @@ def match_labels_to_k8s(org_id, repo_full_name, job_labels):
     raise WebhookError(200, f"Ignoring job: missing required platform label (got {job_labels})")
 
 
-def render_job(job):
-    status_style = {"pending": "#d97706", "running": "#2563eb", "completed": "#16a34a"}
-    k8s_pool = job.get("k8s_pool", "unknown")
-    status = job.get("status", "unknown")
-    job_id = job.get("job_id", "?")
-    repo = job.get("repo_full_name", "")
-    html_url = job.get("html_url", "")
-    created_at = job.get("created_at", "")
-    if created_at:
-        ts = datetime.datetime.fromtimestamp(float(created_at), tz=datetime.timezone.utc)
-        created_str = ts.strftime("%Y-%m-%d %H:%M:%S UTC")
-    else:
-        created_str = "?"
-    color = status_style.get(status, "#666")
-    link = f'<a href="{html_url}">{repo}#{job_id}</a>' if html_url else f"{repo}#{job_id}"
-    return f'<span style="color:{color}">[{status:9s}]</span>  {created_str}  {k8s_pool}  {link}'
-
-
 # --- Routes ---
 
 @app.route("/health", methods=['GET'])
 def health():
     return "ok"
-
-
-@app.route("/usage", methods=['GET'])
-def usage():
-    pool_usage = db.get_pool_usage()
-    lines = []
-    for (_, k8s_pool), info in sorted(pool_usage.items()):
-        lines.append(f"=== {info['entity_name']} / {k8s_pool} ===")
-        if info["jobs"]:
-            lines.append(f"  Jobs ({len(info['jobs'])}):")
-            for job in sorted(info["jobs"], key=lambda j: float(j.get("created_at", 0)), reverse=True):
-                lines.append(f'    - {render_job(job)}')
-        else:
-            lines.append("  Jobs: none")
-        if info["workers"]:
-            lines.append(f"  Workers ({len(info['workers'])}):")
-            for w in sorted(info["workers"]):
-                lines.append(f"    - {w}")
-                try:
-                    events = k8s.get_pod_events(w)
-                    if events:
-                        for ev in events:
-                            ts = ev.last_timestamp or ev.event_time or ev.metadata.creation_timestamp
-                            ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if ts else "unknown"
-                            lines.append(f"        {ts_str}  [{ev.type}]  {ev.reason}: {ev.message}")
-                    else:
-                        lines.append(f"      Events: (none)")
-                except Exception:
-                    lines.append(f"      Events: (error fetching)")
-        else:
-            lines.append("  Workers: none")
-        lines.append("")
-    if not lines:
-        lines.append("No active pools.")
-    return make_response(f"<title>{"Usage - Prod" if PROD else "Usage - Staging"}</title><pre>%s</pre>" % ("\n".join(lines)), 200, {"Content-Type": "text/html"})
-
-
-@app.route("/history", methods=['GET'])
-def history():
-    jobs = db.get_all_jobs()
-
-    # Sort by created_at descending (newest first)
-    jobs.sort(key=lambda j: float(j.get("created_at", 0)), reverse=True)
-
-    lines = []
-    for job in jobs:
-        lines.append(render_job(job))
-
-    if not lines:
-        lines.append("No jobs found.")
-
-    return make_response(f"<title>{"History - Prod" if PROD else "History - Staging"}</title><pre>%s</pre>" % "\n".join(lines), 200, {"Content-Type": "text/html"})
 
 
 @app.route("/", methods=['POST'])

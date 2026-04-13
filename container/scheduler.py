@@ -1,3 +1,4 @@
+import datetime
 import json
 import logging
 import random
@@ -239,28 +240,117 @@ def cleanup_pods():
     known_worker_pod_names = [pod_name for _, _, pod_name in workers]
     db.mark_orphaned_workers_completed(active_pod_names, known_worker_pod_names)
 
-def cleanup_jobs():
-    """Clean up old completed job hashes."""
-    return # let's keep all jobs for now, to understand the usage
-    active_job_ids = db.get_all_active_job_ids()
-    for job_id, data in db.iter_completed_jobs():
-        if job_id and job_id not in active_job_ids:
-            created_at = data.get("created_at")
-            if not created_at:
-                logger.debug("Checking completed job %s for cleanup: missing created_at field, cleaning up", job_id)
-                db.cleanup_job(job_id)
-            elif time.time() - float(created_at) > 15 * (24 * 60 * 60):  # 15 days
-                logger.debug("Checking completed job %s for cleanup: job not active for more than 15 days, cleaning up", job_id)
-                db.cleanup_job(job_id)
-            else:
-                logger.debug("Checking completed job %s for cleanup: job not active, but for less than 15 days", job_id)
-        else:
-            logger.debug("Checking completed job %s for cleanup: job still active, skipping", job_id)
 
+# --- HTTP Handlers ---
 
 @app.route("/health", methods=['GET'])
 def health():
     return "ok"
+
+
+_STATUS_COLORS = {"pending": "#d97706", "running": "#2563eb", "completed": "#16a34a"}
+
+def _format_status(status):
+    color = _STATUS_COLORS.get(status, "#666")
+    return f'<span style="color:{color}">[{status:9s}]</span>'
+
+def _format_labels(job_labels):
+    """Format job_labels for display. Handles both list and JSON string."""
+    if isinstance(job_labels, str):
+        labels = json.loads(job_labels)
+    else:
+        labels = job_labels or []
+    return ('[' + ", ".join(labels) + ']') if labels else "<none>"
+
+
+def _format_timestamp(created_at):
+    """Format a created_at value (datetime or unix float string) for display."""
+    if not created_at:
+        return "?"
+    if isinstance(created_at, datetime.datetime):
+        return created_at.strftime("%Y-%m-%d %H:%M:%S UTC")
+    return datetime.datetime.fromtimestamp(float(created_at), tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def render_job(job):
+    status = _format_status(job.get("status"))
+    job_id = job.get("job_id", "?")
+    repo = job.get("repo_full_name", "")
+    html_url = job.get("html_url", "")
+    labels = _format_labels(job.get("job_labels"))
+    created_str = _format_timestamp(job.get("created_at"))
+    link = f'<a href="{html_url}">{repo}#{job_id}</a>' if html_url else f"{repo}#{job_id}"
+    return f'{status}  {created_str}  {labels}  {link}'
+
+
+@app.route("/usage", methods=['GET'])
+def usage():
+    active_jobs, active_workers = db.get_active_jobs_and_workers()
+
+    # Group by (entity_name, job_labels JSON string)
+    groups = {}
+    for job in active_jobs:
+        labels_key = json.dumps(job["job_labels"])
+        key = (job["entity_id"], labels_key)
+        if key not in groups:
+            groups[key] = {"entity_name": job["entity_name"], "k8s_pool": job["k8s_pool"], "jobs": [], "workers": []}
+        groups[key]["jobs"].append(job)
+
+    for worker in active_workers:
+        labels_key = json.dumps(worker["job_labels"])
+        key = (worker["entity_id"], labels_key)
+        if key not in groups:
+            groups[key] = {"entity_name": str(worker["entity_id"]), "k8s_pool": worker["k8s_pool"], "jobs": [], "workers": []}
+        groups[key]["workers"].append(worker)
+
+    lines = []
+    for (_, labels_key), group in sorted(groups.items()):
+        labels_display = _format_labels(labels_key)
+        lines.append(f"=== {group['entity_name']} / {labels_display} ({group['k8s_pool']}) ===")
+        if group["jobs"]:
+            lines.append(f"  Jobs ({len(group['jobs'])}):")
+            for job in sorted(group["jobs"], key=lambda j: j["created_at"]):
+                lines.append(f'    - {render_job(job)}')
+        else:
+            lines.append("  Jobs: none")
+        if group["workers"]:
+            lines.append(f"  Workers ({len(group['workers'])}):")
+            for w in sorted(group["workers"], key=lambda w: w["created_at"]):
+                lines.append(f"    - {_format_status(w['status'])}  {_format_timestamp(w['created_at'])}  {w['pod_name']}")
+                try:
+                    events = k8s.get_pod_events(w["pod_name"])
+                    if events:
+                        for ev in events:
+                            ts = ev.last_timestamp or ev.event_time or ev.metadata.creation_timestamp
+                            ts_str = ts.strftime("%Y-%m-%d %H:%M:%S") if ts else "unknown"
+                            lines.append(f"        {ts_str}  [{ev.type}]  {ev.reason}: {ev.message}")
+                    else:
+                        lines.append("      Events: (none)")
+                except Exception:
+                    lines.append("      Events: (error fetching)")
+        else:
+            lines.append("  Workers: none")
+        lines.append("")
+    if not lines:
+        lines.append("No active pools.")
+    return make_response(f"<title>{'Usage - Prod' if PROD else 'Usage - Staging'}</title><pre>{chr(10).join(lines)}</pre>", 200, {"Content-Type": "text/html"})
+
+
+@app.route("/history", methods=['GET'])
+def history():
+    jobs = db.get_all_jobs()
+
+    # Sort by created_at descending (newest first)
+    jobs.sort(key=lambda j: float(j.get("created_at", 0)), reverse=True)
+
+    lines = []
+    for job in jobs:
+        lines.append(render_job(job))
+
+    if not lines:
+        lines.append("No jobs found.")
+
+    return make_response(f"<title>{'History - Prod' if PROD else 'History - Staging'}</title><pre>{chr(10).join(lines)}</pre>", 200, {"Content-Type": "text/html"})
 
 
 if __name__ == "__main__":
@@ -290,7 +380,6 @@ if __name__ == "__main__":
         try:
             gh_reconcile()
             cleanup_pods()
-            cleanup_jobs()
             demand_match()
         except Exception as e:
             logger.error("Worker error: %s\n%s", e, traceback.format_exc())

@@ -399,44 +399,27 @@ def get_all_active_job_ids() -> set[str]:
     return {str(row[0]) for row in rows}
 
 
-def get_pool_usage() -> dict[tuple[str, str], dict[str, Any]]:
-    """Return detailed pool usage as a dict keyed by (entity_id, k8s_pool)."""
+def get_active_jobs_and_workers() -> tuple[list[dict], list[dict]]:
+    """Return (active_jobs, active_workers) as raw rows from PostgreSQL."""
     with _get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
-                SELECT entity_id, k8s_pool, entity_name, job_id, status,
-                       repo_full_name, html_url, created_at
+                SELECT entity_id, entity_name, job_labels, k8s_pool, job_id,
+                       status, repo_full_name, html_url, created_at
                 FROM jobs WHERE status = 'pending' OR status = 'running'
+                ORDER BY created_at
             """)
-            job_rows = cur.fetchall()
+            jobs = cur.fetchall()
 
             cur.execute("""
-                SELECT entity_id, k8s_pool, pod_name
+                SELECT entity_id, job_labels, k8s_pool, pod_name, status,
+                       created_at
                 FROM workers WHERE status = 'pending' OR status = 'running'
+                ORDER BY created_at
             """)
-            worker_rows = cur.fetchall()
+            workers = cur.fetchall()
 
-    result = {}
-    for row in job_rows:
-        key = (str(row["entity_id"]), row["k8s_pool"])
-        if key not in result:
-            result[key] = {"entity_name": row["entity_name"], "jobs": [], "workers": []}
-        result[key]["jobs"].append({
-            "k8s_pool": row["k8s_pool"],
-            "job_id": str(row["job_id"]),
-            "status": row["status"],
-            "repo_full_name": row["repo_full_name"] or "",
-            "html_url": row["html_url"] or "",
-            "created_at": str(row["created_at"].timestamp()) if row["created_at"] else "",
-        })
-
-    for row in worker_rows:
-        key = (str(row["entity_id"]), row["k8s_pool"])
-        if key not in result:
-            result[key] = {"entity_name": str(row["entity_id"]), "jobs": [], "workers": []}
-        result[key]["workers"].append(row["pod_name"])
-
-    return result
+    return jobs, workers
 
 
 def get_all_jobs() -> list[dict[str, str]]:
