@@ -4,7 +4,6 @@ import logging
 import random
 import string
 import threading
-import time
 import traceback
 
 import db
@@ -14,6 +13,7 @@ import github as gh
 from constants import *
 
 from flask import Flask, request, make_response
+from flask.json import dumps as json_dumps
 
 # Used for /health for now
 app = Flask(__name__)
@@ -30,7 +30,7 @@ def gh_reconcile():
     completed but database disagrees, mark it completed. If GitHub says in_progress
     but database says pending, update to running.
     """
-    jobs = db.get_all_jobs()
+    jobs, _ = db.get_all_jobs()
     if not jobs:
         return
 
@@ -283,11 +283,23 @@ def render_job(job):
     return f'{status}  {created_str}  {labels}  {link}'
 
 
+def _wants_json():
+    return request.path.endswith('.json') or request.accept_mimetypes.best == 'application/json'
+
+
+def _json_response(data):
+    return make_response(json_dumps(data, default=str), 200, {"Content-Type": "application/json"})
+
+
 @app.route("/usage", methods=['GET'])
+@app.route("/usage.json", methods=['GET'])
 def usage():
     active_jobs, active_workers = db.get_active_jobs_and_workers()
 
-    # Group by (entity_name, job_labels JSON string)
+    if _wants_json():
+        return _json_response({"jobs": active_jobs, "workers": active_workers})
+
+    # HTML: group by (entity_name, job_labels) for display
     groups = {}
     for job in active_jobs:
         labels_key = json.dumps(job["job_labels"])
@@ -300,7 +312,7 @@ def usage():
         labels_key = json.dumps(worker["job_labels"])
         key = (worker["entity_id"], labels_key)
         if key not in groups:
-            groups[key] = {"entity_name": w["entity_name"], "k8s_pool": worker["k8s_pool"], "jobs": [], "workers": []}
+            groups[key] = {"entity_name": worker["entity_name"], "k8s_pool": worker["k8s_pool"], "jobs": [], "workers": []}
         groups[key]["workers"].append(worker)
 
     lines = []
@@ -316,7 +328,7 @@ def usage():
         if group["workers"]:
             lines.append(f"  Workers ({len(group['workers'])}):")
             for w in sorted(group["workers"], key=lambda w: w["created_at"]):
-                lines.append(f"    - {_format_status(w['status'])}  {_format_timestamp(w['created_at'])}  {_format_labels(w["job_labels"])}  {w['pod_name']}")
+                lines.append(f"    - {_format_status(w['status'])}  {_format_timestamp(w['created_at'])}  {_format_labels(w['job_labels'])}  {w['pod_name']}  (node: {w['k8s_node'] or '?'})")
                 try:
                     events = k8s.get_pod_events(w["pod_name"])
                     if events:
@@ -336,17 +348,84 @@ def usage():
     return make_response(f"<title>{'Usage - Prod' if PROD else 'Usage - Staging'}</title><pre>{chr(10).join(lines)}</pre>", 200, {"Content-Type": "text/html"})
 
 
+def _parse_date_param(value: str | None) -> str | None:
+    """Parse a date parameter. Supports ISO dates (YYYY-MM-DD) and relative (-Xd for X days ago)."""
+    if not value:
+        return None
+    import re
+    m = re.match(r'^-(\d+)d$', value)
+    if m:
+        days_ago = int(m.group(1))
+        return (datetime.date.today() - datetime.timedelta(days=days_ago)).isoformat()
+    return value
+
+
+def _build_link_header(base_url: str, page: int, per_page: int, total: int,
+                       extra_params: dict[str, str] | None = None) -> str:
+    """Build a Link header for pagination, matching GitHub API format.
+
+    See: https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api
+    """
+    last_page = max(0, (total - 1) // per_page)
+
+    def _url(p: int) -> str:
+        params = f"page={p}&per_page={per_page}"
+        if extra_params:
+            for k, v in extra_params.items():
+                params += f"&{k}={v}"
+        return f"{base_url}?{params}"
+
+    links = []
+    if page > 0:
+        links.append(f'<{_url(0)}>; rel="first"')
+        links.append(f'<{_url(page - 1)}>; rel="prev"')
+    if page < last_page:
+        links.append(f'<{_url(page + 1)}>; rel="next"')
+        links.append(f'<{_url(last_page)}>; rel="last"')
+    return ", ".join(links)
+
+
 @app.route("/history", methods=['GET'])
+@app.route("/history.json", methods=['GET'])
 def history():
-    jobs = db.get_all_jobs()
+    start = _parse_date_param(request.args.get("start"))
+    end = _parse_date_param(request.args.get("end"))
+    page = request.args.get("page", 0, type=int)
+    per_page = request.args.get("per_page", 100, type=int)
 
-    # Sort by created_at descending (newest first)
-    jobs.sort(key=lambda j: float(j.get("created_at", 0)), reverse=True)
+    if start is not None:
+        try:
+            datetime.date.fromisoformat(start)
+        except:
+            return make_response('invalid parameter start, must be YYYY-MM-DD', 400)
+    if end is not None:
+        try:
+            datetime.date.fromisoformat(end)
+        except:
+            return make_response('invalid parameter end, must be YYYY-MM-DD', 400)
+    if page < 0:
+        return make_response('invalid parameter page, must be >= 0', 400)
+    if per_page <= 0:
+        return make_response('invalid parameter per_page, must be > 0', 400)
 
+    jobs, total = db.get_all_jobs(start=start, end=end, page=page, per_page=per_page)
+
+    if _wants_json():
+        resp = _json_response(jobs)
+        extra = {}
+        if start:
+            extra["start"] = start
+        if end:
+            extra["end"] = end
+        link = _build_link_header(request.base_url.split('?')[0], page, per_page, total, extra)
+        if link:
+            resp.headers["link"] = link
+        return resp
+
+    # HTML
     lines = []
     for job in jobs:
         lines.append(render_job(job))
-
     if not lines:
         lines.append("No jobs found.")
 

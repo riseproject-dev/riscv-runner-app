@@ -3,9 +3,12 @@ from unittest.mock import patch, MagicMock
 
 from constants import EntityType
 from scheduler import (
+    app,
     demand_match,
     cleanup_pods,
     gh_reconcile,
+    _parse_date_param,
+    _build_link_header,
 )
 
 
@@ -220,7 +223,7 @@ def test_cleanup_handles_delete_failure(mock_delete, mock_list, mock_db):
 def test_gh_reconcile_completes_job(mock_status, mock_auth, mock_db):
     """Test that reconciliation marks a job completed when GH says so."""
     job = make_job(111, status="running")
-    mock_db.get_all_jobs.return_value = [job]
+    mock_db.get_all_jobs.return_value = ([job], 1)
 
     gh_reconcile()
 
@@ -233,7 +236,7 @@ def test_gh_reconcile_completes_job(mock_status, mock_auth, mock_db):
 def test_gh_reconcile_updates_running(mock_status, mock_auth, mock_db):
     """Test that reconciliation updates pending→running when GH says in_progress."""
     job = make_job(111, status="pending")
-    mock_db.get_all_jobs.return_value = [job]
+    mock_db.get_all_jobs.return_value = ([job], 1)
 
     gh_reconcile()
 
@@ -243,9 +246,259 @@ def test_gh_reconcile_updates_running(mock_status, mock_auth, mock_db):
 @patch("scheduler.db")
 def test_gh_reconcile_no_active_jobs(mock_db):
     """Test that reconciliation is a no-op when no active jobs."""
-    mock_db.get_all_jobs.return_value = []
+    mock_db.get_all_jobs.return_value = ([], 0)
 
     gh_reconcile()
 
     mock_db.update_job_completed.assert_not_called()
     mock_db.update_job_running.assert_not_called()
+
+
+# --- _parse_date_param tests ---
+
+def test_parse_date_param_none():
+    assert _parse_date_param(None) is None
+
+def test_parse_date_param_iso():
+    assert _parse_date_param("2026-01-15") == "2026-01-15"
+
+def test_parse_date_param_relative():
+    import datetime
+    result = _parse_date_param("-7d")
+    expected = (datetime.date.today() - datetime.timedelta(days=7)).isoformat()
+    assert result == expected
+
+def test_parse_date_param_zero_days():
+    import datetime
+    assert _parse_date_param("-0d") == datetime.date.today().isoformat()
+
+
+# --- _build_link_header tests ---
+
+def test_link_header_first_page():
+    link = _build_link_header("http://example.com/history", page=0, per_page=10, total=50)
+    assert 'rel="next"' in link
+    assert 'rel="last"' in link
+    assert 'rel="prev"' not in link
+    assert 'rel="first"' not in link
+
+def test_link_header_middle_page():
+    link = _build_link_header("http://example.com/history", page=2, per_page=10, total=50)
+    assert 'rel="first"' in link
+    assert 'rel="prev"' in link
+    assert 'rel="next"' in link
+    assert 'rel="last"' in link
+    assert "page=1" in link  # prev
+    assert "page=3" in link  # next
+
+def test_link_header_last_page():
+    link = _build_link_header("http://example.com/history", page=4, per_page=10, total=50)
+    assert 'rel="first"' in link
+    assert 'rel="prev"' in link
+    assert 'rel="next"' not in link
+    assert 'rel="last"' not in link
+
+def test_link_header_single_page():
+    link = _build_link_header("http://example.com/history", page=0, per_page=100, total=50)
+    assert link == ""
+
+def test_link_header_extra_params():
+    link = _build_link_header("http://example.com/history", page=0, per_page=10, total=50,
+                              extra_params={"start": "2026-01-01"})
+    assert "start=2026-01-01" in link
+
+
+# --- /usage tests ---
+
+def _make_active_job(job_id=111, entity_id=1000, entity_name="test-org",
+                     job_labels=None, k8s_pool="scw-em-rv1", status="pending",
+                     repo_full_name="test-org/repo", html_url="https://example.com",
+                     created_at="2026-04-01T00:00:00+00:00"):
+    return {
+        "job_id": job_id, "entity_id": entity_id, "entity_name": entity_name,
+        "job_labels": job_labels or ["ubuntu-24.04-riscv"], "k8s_pool": k8s_pool,
+        "status": status, "repo_full_name": repo_full_name,
+        "html_url": html_url, "created_at": created_at,
+    }
+
+
+def _make_active_worker(pod_name="pod-1", entity_id=1000, entity_name="test-org",
+                         job_labels=None, k8s_pool="scw-em-rv1", k8s_node=None,
+                         status="running", created_at="2026-04-01T00:00:00+00:00"):
+    return {
+        "pod_name": pod_name, "entity_id": entity_id, "entity_name": entity_name,
+        "job_labels": job_labels or ["ubuntu-24.04-riscv"], "k8s_pool": k8s_pool,
+        "k8s_node": k8s_node, "status": status, "created_at": created_at,
+    }
+
+
+@patch("scheduler.db")
+def test_usage_json_empty(mock_db):
+    mock_db.get_active_jobs_and_workers.return_value = ([], [])
+
+    with app.test_client() as client:
+        resp = client.get("/usage.json")
+        assert resp.status_code == 200
+        assert resp.content_type == "application/json"
+        data = resp.get_json()
+        assert data["jobs"] == []
+        assert data["workers"] == []
+
+
+@patch("scheduler.db")
+def test_usage_json_jobs_only(mock_db):
+    jobs = [_make_active_job(job_id=111), _make_active_job(job_id=222, status="running")]
+    mock_db.get_active_jobs_and_workers.return_value = (jobs, [])
+
+    with app.test_client() as client:
+        resp = client.get("/usage.json")
+        data = resp.get_json()
+        assert len(data["jobs"]) == 2
+        assert data["workers"] == []
+        assert data["jobs"][0]["job_id"] == 111
+        assert data["jobs"][1]["job_id"] == 222
+        assert data["jobs"][0]["status"] == "pending"
+        assert data["jobs"][1]["status"] == "running"
+
+
+@patch("scheduler.db")
+def test_usage_json_workers_only(mock_db):
+    workers = [
+        _make_active_worker(pod_name="pod-1", k8s_node="node-1"),
+        _make_active_worker(pod_name="pod-2", status="pending", k8s_node=None),
+    ]
+    mock_db.get_active_jobs_and_workers.return_value = ([], workers)
+
+    with app.test_client() as client:
+        resp = client.get("/usage.json")
+        data = resp.get_json()
+        assert data["jobs"] == []
+        assert len(data["workers"]) == 2
+        assert data["workers"][0]["pod_name"] == "pod-1"
+        assert data["workers"][0]["k8s_node"] == "node-1"
+        assert data["workers"][1]["pod_name"] == "pod-2"
+        assert data["workers"][1]["k8s_node"] is None
+        assert data["workers"][0]["status"] == "running"
+        assert data["workers"][1]["status"] == "pending"
+
+
+@patch("scheduler.db")
+def test_usage_json_jobs_and_workers(mock_db):
+    jobs = [_make_active_job(job_id=111, entity_name="org-a", k8s_pool="pool-1")]
+    workers = [_make_active_worker(pod_name="pod-1", entity_name="org-a", k8s_pool="pool-1")]
+    mock_db.get_active_jobs_and_workers.return_value = (jobs, workers)
+
+    with app.test_client() as client:
+        resp = client.get("/usage.json")
+        data = resp.get_json()
+        assert len(data["jobs"]) == 1
+        assert len(data["workers"]) == 1
+        assert data["jobs"][0]["entity_name"] == "org-a"
+        assert data["jobs"][0]["job_labels"] == ["ubuntu-24.04-riscv"]
+        assert data["workers"][0]["entity_name"] == "org-a"
+        assert data["workers"][0]["k8s_pool"] == "pool-1"
+
+
+@patch("scheduler.db")
+def test_usage_json_preserves_all_fields(mock_db):
+    """Verify JSON output contains all fields from the DB row."""
+    job = _make_active_job(job_id=999, entity_id=42, entity_name="myorg",
+                           job_labels=["label-a", "label-b"], k8s_pool="my-pool",
+                           status="running", repo_full_name="myorg/myrepo",
+                           html_url="https://github.com/myorg/myrepo/actions/runs/1/job/999")
+    mock_db.get_active_jobs_and_workers.return_value = ([job], [])
+
+    with app.test_client() as client:
+        data = client.get("/usage.json").get_json()
+        out = data["jobs"][0]
+        assert out["job_id"] == 999
+        assert out["entity_id"] == 42
+        assert out["entity_name"] == "myorg"
+        assert out["job_labels"] == ["label-a", "label-b"]
+        assert out["k8s_pool"] == "my-pool"
+        assert out["status"] == "running"
+        assert out["repo_full_name"] == "myorg/myrepo"
+        assert out["html_url"] == "https://github.com/myorg/myrepo/actions/runs/1/job/999"
+        assert out["created_at"] == "2026-04-01T00:00:00+00:00"
+
+
+@patch("scheduler.db")
+def test_usage_html(mock_db):
+    mock_db.get_active_jobs_and_workers.return_value = ([], [])
+
+    with app.test_client() as client:
+        resp = client.get("/usage")
+        assert resp.status_code == 200
+        assert "text/html" in resp.content_type
+
+
+# --- /history JSON + paging tests ---
+
+@patch("scheduler.db")
+def test_history_json(mock_db):
+    mock_db.get_all_jobs.return_value = ([{"job_id": "1", "status": "completed"}], 1)
+
+    with app.test_client() as client:
+        resp = client.get("/history.json")
+        assert resp.status_code == 200
+        assert resp.content_type == "application/json"
+        data = resp.get_json()
+        assert len(data) == 1
+
+
+@patch("scheduler.db")
+def test_history_json_with_paging(mock_db):
+    mock_db.get_all_jobs.return_value = ([{"job_id": "1"}], 250)
+
+    with app.test_client() as client:
+        resp = client.get("/history.json?page=1&per_page=100")
+        assert resp.status_code == 200
+        assert "link" in resp.headers
+        link = resp.headers["link"]
+        assert 'rel="first"' in link
+        assert 'rel="prev"' in link
+        assert 'rel="next"' in link
+        assert 'rel="last"' in link
+
+
+@patch("scheduler.db")
+def test_history_passes_params_to_db(mock_db):
+    mock_db.get_all_jobs.return_value = ([], 0)
+
+    with app.test_client() as client:
+        client.get("/history.json?start=2026-01-01&end=2026-02-01&page=2&per_page=50")
+
+    mock_db.get_all_jobs.assert_called_once_with(
+        start="2026-01-01", end="2026-02-01", page=2, per_page=50)
+
+
+@patch("scheduler.db")
+def test_history_relative_dates(mock_db):
+    import datetime
+    mock_db.get_all_jobs.return_value = ([], 0)
+
+    with app.test_client() as client:
+        client.get("/history.json?start=-7d")
+
+    call_args = mock_db.get_all_jobs.call_args
+    expected_start = (datetime.date.today() - datetime.timedelta(days=7)).isoformat()
+    assert call_args.kwargs["start"] == expected_start
+
+
+@patch("scheduler.db")
+def test_history_no_link_header_single_page(mock_db):
+    mock_db.get_all_jobs.return_value = ([{"job_id": "1"}], 1)
+
+    with app.test_client() as client:
+        resp = client.get("/history.json")
+        assert "link" not in resp.headers
+
+
+@patch("scheduler.db")
+def test_history_html_default(mock_db):
+    mock_db.get_all_jobs.return_value = ([], 0)
+
+    with app.test_client() as client:
+        resp = client.get("/history")
+        assert resp.status_code == 200
+        assert "text/html" in resp.content_type

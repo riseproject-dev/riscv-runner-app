@@ -414,7 +414,7 @@ def get_active_jobs_and_workers() -> tuple[list[dict], list[dict]]:
             jobs = cur.fetchall()
 
             cur.execute("""
-                SELECT entity_id, entity_name, job_labels, k8s_pool, pod_name,
+                SELECT entity_id, entity_name, job_labels, k8s_pool, k8s_node, pod_name,
                        status, created_at
                 FROM workers WHERE status = 'pending' OR status = 'running'
                 ORDER BY created_at
@@ -424,13 +424,42 @@ def get_active_jobs_and_workers() -> tuple[list[dict], list[dict]]:
     return jobs, workers
 
 
-def get_all_jobs() -> list[dict[str, str]]:
-    """Return all job hashes as a list of dicts."""
+def get_all_jobs(start: str | None = None, end: str | None = None,
+                 page: int = 0, per_page: int = 100) -> tuple[list[dict[str, str]], int]:
+    """Return (jobs, total_count) with optional date filtering and paging.
+
+    Args:
+        start: ISO date string (YYYY-MM-DD). Only jobs created on or after this date.
+        end: ISO date string (YYYY-MM-DD). Only jobs created before this date.
+        page: Page number (0-indexed).
+        per_page: Number of jobs per page.
+
+    Returns:
+        Tuple of (list of job dicts, total matching count for pagination).
+    """
     with _get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT * FROM jobs")
+            conditions = []
+            params: list = []
+            if start:
+                conditions.append("created_at >= %s::timestamptz")
+                params.append(start)
+            if end:
+                conditions.append("created_at < %s::timestamptz")
+                params.append(end)
+            where = "WHERE " + " AND ".join(conditions) if conditions else ""
+
+            cur.execute(f"SELECT COUNT(*) AS total FROM jobs {where}", params)
+            total = cur.fetchone()["total"]
+
+            page_params = params + [per_page, page * per_page]
+            cur.execute(f"""
+                SELECT * FROM jobs {where}
+                ORDER BY created_at DESC
+                LIMIT %s OFFSET %s
+            """, page_params)
             rows = cur.fetchall()
-    return [_job_row_to_dict(row) for row in rows]
+    return [_job_row_to_dict(row) for row in rows], total
 
 
 def iter_completed_jobs() -> Iterator[tuple[str, dict[str, str]]]:
