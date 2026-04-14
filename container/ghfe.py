@@ -178,7 +178,7 @@ def match_labels_to_k8s(org_id, repo_full_name, job_labels):
             raise WebhookError(200, f"Ignoring job: missing required platform label (got {job_labels}) for PyTorch org")
 
     # Special case(s) for GGML org
-    elif org_id == GGML_ORG_ORG_ID or (org_id == RISEPROJECT_DEV_ORG_ID and repo_full_name.endswith("/llama.cpp")):
+    elif org_id == GGML_ORG_ORG_ID or (org_id == RISEPROJECT_DEV_ORG_ID and repo_full_name in ["riseproject-dev/llama.cpp", "riseproject-dev/llama.cpp-validation"]):
         if job_labels == ["ubuntu-24.04-riscv"]:
             return "cloudv10x-jupiter", RUNNER_IMAGE_UBUNTU_24_04
         else:
