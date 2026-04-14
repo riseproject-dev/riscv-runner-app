@@ -67,6 +67,7 @@ custom:
         PROD: ${self:custom.${self:provider.stage}.prod}
         PROD_URL: ${env:PROD_URL}
         STAGING_URL: ${env:STAGING_URL}
+        LOGLEVEL: INFO
       # Health check configuration
       healthCheck:
         type: http
