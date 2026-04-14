@@ -5,7 +5,7 @@ import threading
 import pytest
 
 from db import (
-    store_job,
+    add_job,
     update_job_running,
     update_job_completed,
     get_pool_demand,
@@ -42,15 +42,15 @@ def mock_pool_and_semaphore():
         yield
 
 
-# --- store_job ---
+# --- add_job ---
 
 @patch("db._init_pool")
-def test_store_job_new(mock_pool_fn):
+def test_add_job_new(mock_pool_fn):
     pool, conn, cur = make_mock_pool()
     mock_pool_fn.return_value = pool
     cur.rowcount = 1  # inserted
 
-    result = store_job(111, entity_id=1000, entity_name="test-org",
+    result = add_job(111, provider="github", entity_id=1000, entity_name="test-org",
                        entity_type=EntityType.ORGANIZATION,
                        repo_full_name="test-org/repo", installation_id=999,
                        labels=["rise"], k8s_pool="scw-em-rv1", k8s_image="img:latest",
@@ -62,12 +62,12 @@ def test_store_job_new(mock_pool_fn):
 
 
 @patch("db._init_pool")
-def test_store_job_duplicate(mock_pool_fn):
+def test_add_job_duplicate(mock_pool_fn):
     pool, conn, cur = make_mock_pool()
     mock_pool_fn.return_value = pool
     cur.rowcount = 0  # not inserted (duplicate)
 
-    result = store_job(111, entity_id=1000, entity_name="test-org",
+    result = add_job(111, provider="github", entity_id=1000, entity_name="test-org",
                        entity_type=EntityType.ORGANIZATION,
                        repo_full_name="test-org/repo", installation_id=999,
                        labels=["rise"], k8s_pool="scw-em-rv1", k8s_image="img:latest",
@@ -77,12 +77,12 @@ def test_store_job_duplicate(mock_pool_fn):
 
 
 @patch("db._init_pool")
-def test_store_job_sorts_labels(mock_pool_fn):
+def test_add_job_sorts_labels(mock_pool_fn):
     pool, conn, cur = make_mock_pool()
     mock_pool_fn.return_value = pool
     cur.rowcount = 1
 
-    store_job(111, entity_id=1000, entity_name="test-org",
+    add_job(111, provider="github", entity_id=1000, entity_name="test-org",
               entity_type=EntityType.ORGANIZATION,
               repo_full_name="test-org/repo", installation_id=999,
               labels=["z-label", "a-label"], k8s_pool="scw-em-rv1",
@@ -91,8 +91,8 @@ def test_store_job_sorts_labels(mock_pool_fn):
     # Check that sorted labels were passed to the INSERT
     insert_call = cur.execute.call_args_list[1]  # second call is the INSERT
     args = insert_call[0][1]
-    # job_labels is the 7th parameter (index 6)
-    assert args[6] == '["a-label", "z-label"]'
+    # job_labels is the 8th parameter (index 7) — provider was inserted before entity_id
+    assert args[7] == '["a-label", "z-label"]'
 
 
 # --- update_job_running ---
@@ -216,7 +216,7 @@ def test_add_worker(mock_pool_fn):
     mock_pool_fn.return_value = pool
     cur.rowcount = 1  # inserted
 
-    add_worker(1000, "test-org", "scw-em-rv1", "pod-1", job_labels=["rise"], k8s_image="img:latest")
+    add_worker("github", 1000, "test-org", "scw-em-rv1", "pod-1", job_labels=["rise"], k8s_image="img:latest")
 
     # No explicit commit needed — _PoolConnection.__exit__ handles it
 
@@ -229,7 +229,7 @@ def test_add_worker_duplicate_raises(mock_pool_fn):
     cur.rowcount = 0  # collision
 
     with pytest.raises(DuplicateRunnerNameException):
-        add_worker(1000, "test-org", "scw-em-rv1", "pod-1", job_labels=["rise"], k8s_image="img:latest")
+        add_worker("github", 1000, "test-org", "scw-em-rv1", "pod-1", job_labels=["rise"], k8s_image="img:latest")
 
 
 @patch("db._init_pool")

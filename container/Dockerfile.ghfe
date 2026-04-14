@@ -11,4 +11,4 @@ ENV PYTHONPATH="/app"
 
 COPY *.py ./
 
-CMD [ "python3", "gh_webhook.py" ]
+CMD [ "python3", "ghfe.py" ]

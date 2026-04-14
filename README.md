@@ -49,14 +49,14 @@ Two GitHub Apps are used: one for organizations (org-scoped runners with runner 
 Jobs and workers are not directly linked -- the only relationship is through the entity. GitHub makes no direct job-to-runner link; a runner is attached to an org or repo, and the job runs inside that context.
 
 The system is split into two containers:
-- **gh-webhook** receives GitHub webhooks, validates them, and writes job state to PostgreSQL. It makes no GitHub API or k8s calls.
+- **ghfe** receives GitHub webhooks, validates them, and writes job state to PostgreSQL. It makes no GitHub API or k8s calls.
 - **scheduler** reads job state from PostgreSQL, provisions runner pods on k8s, reconciles with GitHub, and cleans up completed pods.
 
 ```
 GitHub (workflow_job webhook)
   |
   v
-gh-webhook (gh_webhook.py)
+ghfe (ghfe.py)
   |  - Proxies webhooks to staging for staging entities (prod only)
   |  - Verifies webhook signature
   |  - Validates labels, determines entity type (org or personal)
@@ -86,11 +86,11 @@ Kubernetes (runner pods)
 ### Sequence: Queued webhook
 
 ```
-GitHub -> gh-webhook: workflow_job (action=queued)
-gh-webhook: validate signature, labels, entity type
-gh-webhook: match_labels_to_k8s(labels) -> (k8s_pool, k8s_image)
-gh-webhook -> PostgreSQL: store_job() -> INSERT + NOTIFY queue_event
-gh-webhook -> GitHub: 200 OK
+GitHub -> ghfe: workflow_job (action=queued)
+ghfe: validate signature, labels, entity type
+ghfe: match_labels_to_k8s(labels) -> (k8s_pool, k8s_image)
+ghfe -> PostgreSQL: add_job() -> INSERT + NOTIFY queue_event
+ghfe -> GitHub: 200 OK
 ```
 
 ### Sequence: Scheduler provisioning
@@ -114,19 +114,19 @@ Scheduler: for each pending job:
 ### Sequence: In-progress webhook
 
 ```
-GitHub -> gh-webhook: workflow_job (action=in_progress)
-gh-webhook -> PostgreSQL: update_job_running(job_id)
+GitHub -> ghfe: workflow_job (action=in_progress)
+ghfe -> PostgreSQL: update_job_running(job_id)
   - UPDATE jobs SET status='running' WHERE status='pending'
-gh-webhook -> GitHub: 200 OK
+ghfe -> GitHub: 200 OK
 ```
 
 ### Sequence: Completed webhook
 
 ```
-GitHub -> gh-webhook: workflow_job (action=completed)
-gh-webhook -> PostgreSQL: update_job_completed(job_id)
+GitHub -> ghfe: workflow_job (action=completed)
+ghfe -> PostgreSQL: update_job_completed(job_id)
   - UPDATE jobs SET status='completed' WHERE status IN ('pending', 'running')
-gh-webhook -> GitHub: 200 OK
+ghfe -> GitHub: 200 OK
 ```
 
 ### Sequence: Cancellation
@@ -230,7 +230,7 @@ Per-entity configuration is defined in `ENTITY_CONFIG` in `constants.py`, keyed 
 
 ### HTTP routes
 
-**gh-webhook:**
+**ghfe:**
 
 | Route | Method | Description |
 |-------|--------|-------------|
@@ -250,26 +250,26 @@ Per-entity configuration is defined in `ENTITY_CONFIG` in `constants.py`, keyed 
 | File | Purpose |
 |------|---------|
 | `container/constants.py` | Environment configuration, entity config, image tags |
-| `container/gh_webhook.py` | Flask webhook handler -- validates requests, writes to PostgreSQL |
+| `container/ghfe.py` | Flask webhook handler -- validates requests, writes to PostgreSQL |
 | `container/scheduler.py` | Scheduler -- GH reconciliation, demand matching, cleanup, worker status sync |
 | `container/k8s.py` | Kubernetes pod provisioning, deletion, capacity checks, failure info collection |
 | `container/db.py` | PostgreSQL database operations |
 | `container/github.py` | GitHub API functions (auth, runner groups, JIT config, job status) |
-| `container/Dockerfile.gh_webhook` | Docker image for the gh-webhook container |
+| `container/Dockerfile.ghfe` | Docker image for the ghfe container |
 | `container/Dockerfile.scheduler` | Docker image for the scheduler container |
 
 ### Infrastructure
 
 | Service | Product | Purpose |
 |---------|---------|---------|
-| gh-webhook | Scaleway Container | Receives webhooks, writes job state to PostgreSQL |
+| ghfe | Scaleway Container | Receives webhooks, writes job state to PostgreSQL |
 | scheduler | Scaleway Container | Demand matching, pod provisioning, cleanup, worker status sync |
 | State store | Scaleway Managed Database | PostgreSQL: jobs + workers tables |
 | Runner pods | Self-hosted k8s clusters | Ephemeral RISC-V runner pods |
 
 Production and staging each have their own k8s cluster, provisioned via the `scripts/` tooling. Four containers are deployed total:
-- `gh-webhook` + `scheduler` (production, `main` branch)
-- `gh-webhook` + `scheduler` (staging, `staging` branch)
+- `ghfe` + `scheduler` (production, `main` branch)
+- `ghfe` + `scheduler` (staging, `staging` branch)
 
 ## Development
 
@@ -294,7 +294,7 @@ Deployment is handled automatically by GitHub Actions (`.github/workflows/releas
 
 ### How it works
 
-1. **Push to `main`** automatically deploys to **production**: runs tests, builds the `gh-webhook` and `scheduler` Docker images, pushes them to Scaleway Container Registry, and deploys via `serverless deploy`.
+1. **Push to `main`** automatically deploys to **production**: runs tests, builds the `ghfe` and `scheduler` Docker images, pushes them to Scaleway Container Registry, and deploys via `serverless deploy`.
 2. **Push to `staging`** automatically deploys to **staging**: same pipeline but builds `:staging` tags. After deploy, it triggers a sample workflow to verify end-to-end.
 3. **Manual deploy** via the Actions tab: click "Run workflow", select "staging" or "production".
 

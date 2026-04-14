@@ -3,7 +3,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from constants import EntityType
-from gh_webhook import (
+from ghfe import (
     WebhookError,
     check_webhook_signature,
     check_webhook_event,
@@ -17,7 +17,7 @@ from gh_webhook import (
 # --- Signature verification ---
 
 def test_valid_signature():
-    from gh_webhook import app
+    from ghfe import app
     body = '{"action":"queued"}'
     expected_signature = compute_signature(body, GHAPP_WEBHOOK_SECRET).hexdigest()
     headers = {"X-Hub-Signature-256": f"sha256={expected_signature}", "X-Github-Event": "workflow_job"}
@@ -29,7 +29,7 @@ def test_valid_signature():
 
 
 def test_invalid_signature():
-    from gh_webhook import app
+    from ghfe import app
     headers = {"X-Hub-Signature-256": "sha256=invalid", "X-Github-Event": "workflow_job"}
     with app.test_request_context(headers=headers):
         with pytest.raises(WebhookError) as exc:
@@ -38,7 +38,7 @@ def test_invalid_signature():
 
 
 def test_missing_signature():
-    from gh_webhook import app
+    from ghfe import app
     headers = {"X-Github-Event": "workflow_job"}
     with app.test_request_context(headers=headers):
         with pytest.raises(WebhookError) as exc:
@@ -127,10 +127,10 @@ def test_match_labels_missing_platform():
 
 # --- Webhook integration ---
 
-@patch("db.store_job", return_value=True)
+@patch("db.add_job", return_value=True)
 def test_webhook_queued_stores_job(mock_store):
     """Test that a queued webhook stores the job."""
-    from gh_webhook import app
+    from ghfe import app
 
     payload = {
         "action": "queued",
@@ -151,6 +151,7 @@ def test_webhook_queued_stores_job(mock_store):
         assert b"stored" in resp.data
         mock_store.assert_called_once_with(
             job_id=12345,
+            provider="github",
             entity_id=152654596,
             entity_name="riseproject-dev",
             entity_type=EntityType.ORGANIZATION,
@@ -163,10 +164,10 @@ def test_webhook_queued_stores_job(mock_store):
         )
 
 
-@patch("db.store_job", return_value=True)
+@patch("db.add_job", return_value=True)
 def test_webhook_queued_personal_account(mock_store):
     """Test that a queued webhook from a personal account uses repo_id as entity_id."""
-    from gh_webhook import app
+    from ghfe import app
 
     payload = {
         "action": "queued",
@@ -187,6 +188,7 @@ def test_webhook_queued_personal_account(mock_store):
         assert b"stored" in resp.data
         mock_store.assert_called_once_with(
             job_id=55555,
+            provider="github",
             entity_id=200,  # repo_id for personal accounts
             entity_name="someuser",
             entity_type=EntityType.USER,
@@ -202,7 +204,7 @@ def test_webhook_queued_personal_account(mock_store):
 @patch("db.update_job_running", return_value="pending")
 def test_webhook_in_progress(mock_update):
     """Test that an in_progress webhook updates job status."""
-    from gh_webhook import app
+    from ghfe import app
 
     payload = {
         "action": "in_progress",
@@ -226,7 +228,7 @@ def test_webhook_in_progress(mock_update):
 @patch("db.update_job_completed", return_value="running")
 def test_webhook_completed(mock_complete):
     """Test that a completed webhook marks the job as completed."""
-    from gh_webhook import app
+    from ghfe import app
 
     payload = {
         "action": "completed",

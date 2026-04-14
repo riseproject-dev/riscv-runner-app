@@ -4,8 +4,8 @@ import sys
 import time
 import urllib.request
 
-BASE_URL = "https://riseriscvrunnerappqdvknz9s-gh-webhook.functions.fnc.fr-par.scw.cloud"
-STAGING_URL = "https://riseriscvrunnerappst73ndwr0w-gh-webhook.functions.fnc.fr-par.scw.cloud"
+BASE_URL = "https://riseriscvrunnerappqdvknz9s-ghfe.functions.fnc.fr-par.scw.cloud"
+STAGING_URL = "https://riseriscvrunnerappst73ndwr0w-ghfe.functions.fnc.fr-par.scw.cloud"
 
 MAX_RETRIES = 10
 RETRY_DELAY = 5

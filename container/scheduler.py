@@ -109,6 +109,7 @@ def demand_match():
         entity_type = EntityType(job.get("entity_type", EntityType.ORGANIZATION))
         entity_id = job.get("entity_id") or job.get("org_id")  # migration fallback
         repo_full_name = job.get("repo_full_name")
+        provider = job.get("provider", "github")
 
         if not all([k8s_pool, k8s_image, installation_id, entity_name, entity_id, repo_full_name]):
             logger.warning("Job %s missing required fields, skipping", job_id)
@@ -144,7 +145,7 @@ def demand_match():
             suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=9))
             candidate = f"rise-riscv-runner%s-{entity_id}-{suffix}" % ("" if PROD else "-staging")
             try:
-                db.add_worker(entity_id, entity_name, k8s_pool, candidate, job_labels=labels, k8s_image=k8s_image)
+                db.add_worker(provider, entity_id, entity_name, k8s_pool, candidate, job_labels=labels, k8s_image=k8s_image)
                 runner_name = candidate
                 break
             except DuplicateRunnerNameException:

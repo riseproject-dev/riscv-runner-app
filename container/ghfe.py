@@ -253,8 +253,9 @@ def webhook():
             if not html_url:
                 raise WebhookError(400, "HTML URL is missing in payload")
 
-            stored = db.store_job(
+            stored = db.add_job(
                 job_id=job_id,
+                provider="github",
                 entity_id=entity_id,
                 entity_name=entity_name,
                 entity_type=entity_type,

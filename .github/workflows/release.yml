@@ -72,20 +72,22 @@ jobs:
           username: nologin
           password: ${{ secrets.SCW_SECRET_KEY }}
 
-      - name: Build gh-webhook image
+      - name: Build ghfe image
         uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
         with:
           platforms: linux/amd64
           context: container
-          file: container/Dockerfile.gh_webhook
+          file: container/Dockerfile.ghfe
           tags: |
             ${{ needs.resolve.outputs.environment == 'main'    && format('{0}/{1}:gh-webhook-latest', env.REGISTRY, env.IMAGE) || '' }}
             ${{ needs.resolve.outputs.environment == 'staging' && format('{0}/{1}:gh-webhook-staging', env.REGISTRY, env.IMAGE) || '' }}
+            ${{ needs.resolve.outputs.environment == 'main'    && format('{0}/{1}:ghfe-latest', env.REGISTRY, env.IMAGE) || '' }}
+            ${{ needs.resolve.outputs.environment == 'staging' && format('{0}/{1}:ghfe-staging', env.REGISTRY, env.IMAGE) || '' }}
           cache-from: |
-            type=gha,scope=gh-webhook-main
-            ${{ format('type=gha,scope=type=gha,scope=gh-webhook-{0}', env.GITHUB_REF_NAME_SLUG) }}
+            type=gha,scope=ghfe-main
+            ${{ format('type=gha,scope=type=gha,scope=ghfe-{0}', env.GITHUB_REF_NAME_SLUG) }}
           cache-to: |
-            ${{ format('type=gha,scope=type=gha,scope=gh-webhook-{0}', env.GITHUB_REF_NAME_SLUG) }}
+            ${{ format('type=gha,scope=type=gha,scope=ghfe-{0}', env.GITHUB_REF_NAME_SLUG) }}
           push: true
 
       - name: Build scheduler image

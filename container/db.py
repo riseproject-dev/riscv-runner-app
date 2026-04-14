@@ -111,10 +111,17 @@ def ensure_schema() -> None:
             cur.execute(f"CREATE SCHEMA IF NOT EXISTS {POSTGRES_SCHEMA}")
             cur.execute(f"SET search_path TO {POSTGRES_SCHEMA}")
 
-            # Create enum type (idempotent via DO block)
+            # Create enum types (idempotent via DO blocks)
             cur.execute("""
                 DO $$ BEGIN
                     CREATE TYPE status_enum AS ENUM ('pending', 'running', 'completed');
+                EXCEPTION
+                    WHEN duplicate_object THEN null;
+                END $$
+            """)
+            cur.execute("""
+                DO $$ BEGIN
+                    CREATE TYPE provider_enum AS ENUM ('github', 'gitlab', 'azdo');
                 EXCEPTION
                     WHEN duplicate_object THEN null;
                 END $$
@@ -125,6 +132,7 @@ def ensure_schema() -> None:
                 CREATE TABLE IF NOT EXISTS jobs (
                     job_id          BIGINT PRIMARY KEY,
                     status          status_enum NOT NULL DEFAULT 'pending',
+                    provider        provider_enum NOT NULL,
                     entity_id       BIGINT NOT NULL,
                     entity_name     TEXT NOT NULL,
                     entity_type     TEXT NOT NULL,
@@ -143,6 +151,7 @@ def ensure_schema() -> None:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS workers (
                     pod_name      TEXT PRIMARY KEY,
+                    provider      provider_enum NOT NULL,
                     entity_id     BIGINT NOT NULL,
                     entity_name   TEXT NOT NULL,
                     job_labels    JSONB NOT NULL DEFAULT '[]',
@@ -186,7 +195,7 @@ def ensure_schema() -> None:
 
 # --- Job operations ---
 
-def store_job(job_id: int, entity_id: int, entity_name: str, entity_type: str | Any,
+def add_job(job_id: int, provider: str, entity_id: int, entity_name: str, entity_type: str | Any,
               repo_full_name: str, installation_id: int, labels: list[str],
               k8s_pool: str, k8s_image: str, html_url: str) -> bool:
     """Store a new job. Returns True if created, False if duplicate."""
@@ -197,13 +206,13 @@ def store_job(job_id: int, entity_id: int, entity_name: str, entity_type: str | 
     with _get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO jobs (job_id, status, entity_id, entity_name, entity_type,
+                INSERT INTO jobs (job_id, status, provider, entity_id, entity_name, entity_type,
                                   repo_full_name, installation_id, job_labels, k8s_pool,
                                   k8s_image, html_url, created_at, updated_at)
-                VALUES (%s, 'pending', %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                VALUES (%s, 'pending', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         to_timestamp(%s), to_timestamp(%s))
                 ON CONFLICT (job_id) DO NOTHING
-            """, (int(job_id), int(entity_id), entity_name, entity_type_val,
+            """, (int(job_id), provider, int(entity_id), entity_name, entity_type_val,
                   repo_full_name, int(installation_id), sorted_labels, k8s_pool,
                   k8s_image, html_url, now, now))
             created = cur.rowcount > 0
@@ -325,7 +334,7 @@ def get_pending_jobs() -> list[str]:
     return [str(row[0]) for row in rows]
 
 
-def add_worker(entity_id: int, entity_name: str, k8s_pool: str, pod_name: str,
+def add_worker(provider: str, entity_id: int, entity_name: str, k8s_pool: str, pod_name: str,
                job_labels: list[str], k8s_image: str) -> None:
     """Add a worker. Raises DuplicateRunnerNameException on pod_name collision."""
     sorted_labels = json.dumps(sorted(job_labels))
@@ -333,11 +342,11 @@ def add_worker(entity_id: int, entity_name: str, k8s_pool: str, pod_name: str,
     with _get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO workers (pod_name, entity_id, entity_name, k8s_pool, job_labels,
+                INSERT INTO workers (pod_name, provider, entity_id, entity_name, k8s_pool, job_labels,
                                      k8s_image, status, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, 'pending', now(), now())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending', now(), now())
                 ON CONFLICT (pod_name) DO NOTHING
-            """, (pod_name, int(entity_id), entity_name, k8s_pool, sorted_labels, k8s_image))
+            """, (pod_name, provider, int(entity_id), entity_name, k8s_pool, sorted_labels, k8s_image))
 
             if cur.rowcount == 0:
                 raise DuplicateRunnerNameException(
