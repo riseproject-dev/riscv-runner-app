@@ -145,9 +145,10 @@ def ensure_schema() -> None:
                     pod_name      TEXT PRIMARY KEY,
                     entity_id     BIGINT NOT NULL,
                     entity_name   TEXT NOT NULL,
-                    k8s_pool      TEXT NOT NULL,
                     job_labels    JSONB NOT NULL DEFAULT '[]',
+                    k8s_pool      TEXT NOT NULL,
                     k8s_image     TEXT NOT NULL,
+                    k8s_node      TEXT,
                     status        status_enum NOT NULL DEFAULT 'pending',
                     failure_info  JSONB,
                     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -464,27 +465,29 @@ def sync_worker_status(pods: list[Any], failure_info_by_pod: dict[str, dict]) ->
             for pod in pods:
                 phase = pod.status.phase
                 pod_name = pod.metadata.name
+                node_name = pod.spec.node_name  # set once pod is scheduled
 
                 if phase == "Running":
                     # pending -> running
                     cur.execute("""
-                        UPDATE workers SET status = 'running', updated_at = now()
+                        UPDATE workers SET status = 'running', k8s_node = %s, updated_at = now()
                         WHERE pod_name = %s AND status = 'pending'
-                    """, (pod_name,))
+                    """, (node_name, pod_name))
                 elif phase in ("Succeeded", "Failed"):
-                    # pending -> completed, running -> completed
+                    # pending|running -> completed
                     failure_info = failure_info_by_pod.get(pod_name)
                     if failure_info:
                         cur.execute("""
-                            UPDATE workers SET status = 'completed', updated_at = now(),
-                                   failure_info = %s
+                            UPDATE workers SET status = 'completed', k8s_node = COALESCE(k8s_node, %s),
+                                   failure_info = %s, updated_at = now()
                             WHERE pod_name = %s AND (status = 'pending' OR status = 'running')
-                        """, (json.dumps(failure_info), pod_name))
+                        """, (node_name, json.dumps(failure_info), pod_name))
                     else:
                         cur.execute("""
-                            UPDATE workers SET status = 'completed', updated_at = now()
+                            UPDATE workers SET status = 'completed', k8s_node = COALESCE(k8s_node, %s),
+                                   updated_at = now()
                             WHERE pod_name = %s AND (status = 'pending' OR status = 'running')
-                        """, (pod_name,))
+                        """, (node_name, pod_name))
 
 
 def mark_orphaned_workers_completed(active_pod_names: set[str], known_worker_pod_names: list[str]) -> None:
