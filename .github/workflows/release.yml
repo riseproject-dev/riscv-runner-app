@@ -17,8 +17,8 @@ concurrency:
 env:
   REGISTRY: rg.fr-par.scw.cloud/funcscwriseriscvrunnerappqdvknz9s
   IMAGE: riscv-runner
-  PROD_URL: https://riseriscvrunnerappqdvknz9s-gh-webhook.functions.fnc.fr-par.scw.cloud
-  STAGING_URL: https://riseriscvrunnerappst73ndwr0w-gh-webhook.functions.fnc.fr-par.scw.cloud
+  PROD_URL: https://riseriscvrunnerappqdvknz9s-ghfe.functions.fnc.fr-par.scw.cloud
+  STAGING_URL: https://riseriscvrunnerappst73ndwr0w-ghfe.functions.fnc.fr-par.scw.cloud
 
 jobs:
   resolve:
