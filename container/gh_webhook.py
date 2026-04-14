@@ -295,7 +295,7 @@ def webhook():
 if __name__ == "__main__":
     # Set the logging level for all loggers to INFO
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.getLevelNamesMapping()[os.environ.get("LOGLEVEL", "INFO")],
         format='%(pathname)s:%(lineno)d::%(funcName)s: [%(levelname)s] %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
