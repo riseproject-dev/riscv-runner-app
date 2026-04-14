@@ -316,7 +316,7 @@ def usage():
         if group["workers"]:
             lines.append(f"  Workers ({len(group['workers'])}):")
             for w in sorted(group["workers"], key=lambda w: w["created_at"]):
-                lines.append(f"    - {_format_status(w['status'])}  {_format_timestamp(w['created_at'])}  {w['pod_name']}")
+                lines.append(f"    - {_format_status(w['status'])}  {_format_timestamp(w['created_at'])} {_format_labels(w["job_labels"])}  {w['pod_name']}")
                 try:
                     events = k8s.get_pod_events(w["pod_name"])
                     if events:
