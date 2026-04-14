@@ -216,7 +216,7 @@ def test_add_worker(mock_pool_fn):
     mock_pool_fn.return_value = pool
     cur.rowcount = 1  # inserted
 
-    add_worker(1000, "scw-em-rv1", "pod-1", job_labels=["rise"], k8s_image="img:latest")
+    add_worker(1000, "test-org", "scw-em-rv1", "pod-1", job_labels=["rise"], k8s_image="img:latest")
 
     # No explicit commit needed — _PoolConnection.__exit__ handles it
 
@@ -229,7 +229,7 @@ def test_add_worker_duplicate_raises(mock_pool_fn):
     cur.rowcount = 0  # collision
 
     with pytest.raises(DuplicateRunnerNameException):
-        add_worker(1000, "scw-em-rv1", "pod-1", job_labels=["rise"], k8s_image="img:latest")
+        add_worker(1000, "test-org", "scw-em-rv1", "pod-1", job_labels=["rise"], k8s_image="img:latest")
 
 
 @patch("db._init_pool")

@@ -144,7 +144,7 @@ def demand_match():
             suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=9))
             candidate = f"rise-riscv-runner%s-{entity_id}-{suffix}" % ("" if PROD else "-staging")
             try:
-                db.add_worker(entity_id, k8s_pool, candidate, job_labels=labels, k8s_image=k8s_image)
+                db.add_worker(entity_id, entity_name, k8s_pool, candidate, job_labels=labels, k8s_image=k8s_image)
                 runner_name = candidate
                 break
             except DuplicateRunnerNameException:

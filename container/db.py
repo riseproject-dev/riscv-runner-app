@@ -144,6 +144,7 @@ def ensure_schema() -> None:
                 CREATE TABLE IF NOT EXISTS workers (
                     pod_name      TEXT PRIMARY KEY,
                     entity_id     BIGINT NOT NULL,
+                    entity_name   TEXT NOT NULL,
                     k8s_pool      TEXT NOT NULL,
                     job_labels    JSONB NOT NULL DEFAULT '[]',
                     k8s_image     TEXT NOT NULL,
@@ -323,7 +324,7 @@ def get_pending_jobs() -> list[str]:
     return [str(row[0]) for row in rows]
 
 
-def add_worker(entity_id: int, k8s_pool: str, pod_name: str,
+def add_worker(entity_id: int, entity_name: str, k8s_pool: str, pod_name: str,
                job_labels: list[str], k8s_image: str) -> None:
     """Add a worker. Raises DuplicateRunnerNameException on pod_name collision."""
     sorted_labels = json.dumps(sorted(job_labels))
@@ -331,11 +332,11 @@ def add_worker(entity_id: int, k8s_pool: str, pod_name: str,
     with _get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                INSERT INTO workers (pod_name, entity_id, k8s_pool, job_labels, k8s_image,
-                                     status, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, 'pending', now(), now())
+                INSERT INTO workers (pod_name, entity_id, entity_name, k8s_pool, job_labels,
+                                     k8s_image, status, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, 'pending', now(), now())
                 ON CONFLICT (pod_name) DO NOTHING
-            """, (pod_name, int(entity_id), k8s_pool, sorted_labels, k8s_image))
+            """, (pod_name, int(entity_id), entity_name, k8s_pool, sorted_labels, k8s_image))
 
             if cur.rowcount == 0:
                 raise DuplicateRunnerNameException(

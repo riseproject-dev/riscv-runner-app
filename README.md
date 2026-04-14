@@ -189,6 +189,7 @@ CREATE TABLE jobs (
 CREATE TABLE workers (
     pod_name      TEXT PRIMARY KEY,
     entity_id     BIGINT NOT NULL,
+    entity_name   TEXT NOT NULL,
     k8s_pool      TEXT NOT NULL,
     job_labels    JSONB NOT NULL DEFAULT '[]',
     k8s_image     TEXT NOT NULL,
