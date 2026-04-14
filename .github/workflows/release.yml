@@ -132,4 +132,4 @@ jobs:
         run: |
           gh workflow run ${GH_WORKFLOW} --repo ${GH_REPO}
           sleep 5
-          gh run watch $(gh run list --repo ${GH_REPO} --workflow ${GH_WORKFLOW} --limit 1 --json databaseId --jq '.[0].databaseId') --repo ${GH_REPO} --exit-status
+          gh run watch $(gh run list --repo ${GH_REPO} --workflow ${GH_WORKFLOW} --limit 1 --json databaseId --jq '.[0].databaseId') --repo ${GH_REPO} --interval 15 --exit-status
