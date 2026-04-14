@@ -77,7 +77,8 @@ jobs:
         with:
           platforms: linux/amd64
           context: container
-          file: container/Dockerfile.ghfe
+          file: container/Dockerfile
+          target: ghfe
           tags: |
             ${{ needs.resolve.outputs.environment == 'main'    && format('{0}/{1}:gh-webhook-latest', env.REGISTRY, env.IMAGE) || '' }}
             ${{ needs.resolve.outputs.environment == 'staging' && format('{0}/{1}:gh-webhook-staging', env.REGISTRY, env.IMAGE) || '' }}
@@ -95,7 +96,8 @@ jobs:
         with:
           platforms: linux/amd64
           context: container
-          file: container/Dockerfile.scheduler
+          file: container/Dockerfile
+          target: scheduler
           tags: |
             ${{ needs.resolve.outputs.environment == 'main'    && format('{0}/{1}:scheduler-latest', env.REGISTRY, env.IMAGE) || '' }}
             ${{ needs.resolve.outputs.environment == 'staging' && format('{0}/{1}:scheduler-staging', env.REGISTRY, env.IMAGE) || '' }}

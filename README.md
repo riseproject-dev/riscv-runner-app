@@ -255,8 +255,7 @@ Per-entity configuration is defined in `ENTITY_CONFIG` in `constants.py`, keyed 
 | `container/k8s.py` | Kubernetes pod provisioning, deletion, capacity checks, failure info collection |
 | `container/db.py` | PostgreSQL database operations |
 | `container/github.py` | GitHub API functions (auth, runner groups, JIT config, job status) |
-| `container/Dockerfile.ghfe` | Docker image for the ghfe container |
-| `container/Dockerfile.scheduler` | Docker image for the scheduler container |
+| `container/Dockerfile` | Docker image for the ghfe and scheduler containers |
 
 ### Infrastructure
 

@@ -1,4 +1,4 @@
-FROM python:3.12-slim-trixie
+FROM python:3.12-slim-trixie AS base
 WORKDIR /app
 
 RUN pip3 install --no-cache --upgrade pip
@@ -11,4 +11,8 @@ ENV PYTHONPATH="/app"
 
 COPY *.py ./
 
+FROM base AS scheduler
+CMD [ "python3", "scheduler.py" ]
+
+FROM base AS ghfe
 CMD [ "python3", "ghfe.py" ]
