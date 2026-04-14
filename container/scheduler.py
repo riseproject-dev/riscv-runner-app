@@ -300,7 +300,7 @@ def usage():
         labels_key = json.dumps(worker["job_labels"])
         key = (worker["entity_id"], labels_key)
         if key not in groups:
-            groups[key] = {"entity_name": str(worker["entity_id"]), "k8s_pool": worker["k8s_pool"], "jobs": [], "workers": []}
+            groups[key] = {"entity_name": w["entity_name"], "k8s_pool": worker["k8s_pool"], "jobs": [], "workers": []}
         groups[key]["workers"].append(worker)
 
     lines = []

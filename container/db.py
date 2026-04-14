@@ -413,8 +413,8 @@ def get_active_jobs_and_workers() -> tuple[list[dict], list[dict]]:
             jobs = cur.fetchall()
 
             cur.execute("""
-                SELECT entity_id, job_labels, k8s_pool, pod_name, status,
-                       created_at
+                SELECT entity_id, entity_name, job_labels, k8s_pool, pod_name,
+                       status, created_at
                 FROM workers WHERE status = 'pending' OR status = 'running'
                 ORDER BY created_at
             """)
