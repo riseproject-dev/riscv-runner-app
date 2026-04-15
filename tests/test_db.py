@@ -8,6 +8,7 @@ from db import (
     add_job,
     update_job_running,
     update_job_completed,
+    update_job_failed,
     get_pool_demand,
     get_pending_jobs,
     add_worker,
@@ -179,6 +180,36 @@ def test_update_job_completed_not_found(mock_pool_fn):
     prev = update_job_completed(111)
 
     assert prev is None
+
+
+# --- update_job_failed ---
+
+@patch("db._init_pool")
+def test_update_job_failed_serializes_failure_info_as_json(mock_pool_fn):
+    """Successful pending -> failed passes failure_info as JSON string to SQL."""
+    pool, conn, cur = make_mock_pool()
+    mock_pool_fn.return_value = pool
+    cur.fetchone.return_value = ("pending",)
+
+    failure_info = {"version": 1, "message": "job not found"}
+    prev = update_job_failed(111, failure_info)
+
+    assert prev == "pending"
+    # Verify the second parameter to the SQL query is a JSON string, not a dict
+    insert_call = cur.execute.call_args_list[1]  # second call is the UPDATE (first is SET search_path)
+    sql_params = insert_call[0][1]
+    assert isinstance(sql_params[1], str), "failure_info should be serialized as JSON string"
+    assert json.loads(sql_params[1]) == failure_info
+
+
+@patch("db._init_pool")
+def test_update_job_failed_requires_version_key(mock_pool_fn):
+    """failure_info must contain a 'version' key with an int value."""
+    pool, conn, cur = make_mock_pool()
+    mock_pool_fn.return_value = pool
+
+    with pytest.raises(AssertionError, match="failure_info must have a failure_info"):
+        update_job_failed(111, {"message": "missing version"})
 
 
 # --- get_pool_demand ---

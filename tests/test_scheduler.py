@@ -241,6 +241,46 @@ def test_gh_reconcile_updates_running(mock_status, mock_auth, mock_db):
 
 
 @patch("scheduler.db")
+@patch("scheduler.gh.authenticate_app", return_value="token-123")
+@patch("scheduler.gh.get_job_status")
+def test_gh_reconcile_marks_job_failed_on_404(mock_status, mock_auth, mock_db):
+    """Test that a 404 from get_job_status marks the job as failed."""
+    from github import GitHubAPIError
+
+    job = make_job(111, status="running")
+    mock_db.get_active_jobs.return_value = [job]
+    mock_status.side_effect = GitHubAPIError(404, "Not Found")
+
+    gh_reconcile()
+
+    mock_db.update_job_failed.assert_called_once()
+    call_args = mock_db.update_job_failed.call_args[0]
+    assert call_args[0] == "111"
+    assert "version" in call_args[1] and isinstance(call_args[1]["version"], int) and call_args[1]["version"] >= 1
+    assert "job not found" in call_args[1]["message"]
+
+
+@patch("scheduler.db")
+@patch("scheduler.gh.authenticate_app")
+def test_gh_reconcile_marks_all_jobs_failed_on_installation_404(mock_auth, mock_db):
+    """Test that a 404 from authenticate_app marks all jobs for that installation as failed."""
+    from github import GitHubAPIError
+
+    jobs = [make_job(111, status="running"), make_job(222, status="pending")]
+    mock_db.get_active_jobs.return_value = jobs
+    mock_auth.side_effect = GitHubAPIError(404, "Not Found")
+
+    gh_reconcile()
+
+    assert mock_db.update_job_failed.call_count == 2
+    job_ids = [call_args[0][0] for call_args in mock_db.update_job_failed.call_args_list]
+    assert set(job_ids) == {"111", "222"}
+    for call_args in mock_db.update_job_failed.call_args_list:
+        assert "version" in call_args[0][1] and isinstance(call_args[0][1]["version"], int) and call_args[0][1]["version"] >= 1
+        assert "installation not found" in call_args[0][1]["message"]
+
+
+@patch("scheduler.db")
 def test_gh_reconcile_no_active_jobs(mock_db):
     """Test that reconciliation is a no-op when no active jobs."""
     mock_db.get_active_jobs.return_value = []

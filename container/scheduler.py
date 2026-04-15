@@ -34,20 +34,28 @@ def gh_reconcile():
     if not jobs:
         return
 
-    # Group jobs by installation_id to minimize auth calls
+    # Group jobs by (installation_id, entity_type) to minimize auth calls
     jobs_by_installation = {}
     for job in jobs:
         assert job['status'] in ['pending', 'running'], f'Job job_id={job['job_id']} is not running or pending, status={job['status']}'
-        installation_id = job.get("installation_id")
-        if installation_id:
-            jobs_by_installation.setdefault(installation_id, []).append(job)
+        jobs_by_installation.setdefault((job['installation_id'], EntityType(job['entity_type'])), []).append(job)
 
-    for installation_id, jobs in jobs_by_installation.items():
+    for (installation_id, entity_type), jobs in jobs_by_installation.items():
         try:
-            entity_type = EntityType(jobs[0].get("entity_type", EntityType.ORGANIZATION))
             token = gh.authenticate_app(int(installation_id), entity_type=entity_type)
         except gh.GitHubAPIError as e:
-            logger.error("Failed to authenticate for installation %s: %s", installation_id, e)
+            if e.status_code == 404:
+                logger.warning("Failed to find installation installation_id=%s entity_type=%s, marking all jobs job_ids=%s as failed", installation_id, entity_type, [job['job_id'] for job in jobs])
+                for job in jobs:
+                    db.update_job_failed(
+                        job['job_id'],
+                        {
+                            "version": 1,
+                            "message": f"installation not found for installation_id={installation_id} entity_type={entity_type}"
+                        }
+                    )
+                continue
+            logger.error("Failed to authenticate for installation installation_id=%s entity_type=%s: %s", installation_id, entity_type, e)
             continue
 
         for job in jobs:
@@ -59,7 +67,17 @@ def gh_reconcile():
             try:
                 gh_status = gh.get_job_status(repo, job_id, token)
             except gh.GitHubAPIError as e:
-                logger.error("Failed to get status for job %s: %s", job_id, e)
+                if e.status_code == 404:
+                    logger.warning("Failed to find job job_id=%s entity=%s entity_id=%s entity_type=%s: marking as failed", job_id, entity_type, job['entity_id'], job['entity_name'])
+                    db.update_job_failed(
+                        job_id,
+                        {
+                            "version": 1,
+                            "message": f"job not found for job_id={job_id} entity={job['entity_name']} entity_id={job['entity_id']} entity_type={entity_type}"
+                        }
+                    )
+                    continue
+                logger.error("Failed to get status for job job_id=%s entity=%s entity_id=%s entity_type=%s: %s", job_id, entity_type, job['entity_id'], job['entity_name'], e)
                 continue
 
             db_status = job.get("status")

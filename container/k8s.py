@@ -225,6 +225,7 @@ def collect_pod_failure_info(pod) -> dict:
     """
     pod_name = pod.metadata.name
     info = {
+        "version": 1, # version structure of the data
         "containers": {},
         "events": [],
         "pod_message": pod.status.message,

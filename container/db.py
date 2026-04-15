@@ -114,7 +114,7 @@ def ensure_schema() -> None:
             # Create enum types (idempotent via DO blocks)
             cur.execute("""
                 DO $$ BEGIN
-                    CREATE TYPE status_enum AS ENUM ('pending', 'running', 'completed');
+                    CREATE TYPE status_enum AS ENUM ('pending', 'running', 'completed', 'failed');
                 EXCEPTION
                     WHEN duplicate_object THEN null;
                 END $$
@@ -132,6 +132,7 @@ def ensure_schema() -> None:
                 CREATE TABLE IF NOT EXISTS jobs (
                     job_id          BIGINT PRIMARY KEY,
                     status          status_enum NOT NULL DEFAULT 'pending',
+                    failure_info    JSONB,
                     provider        provider_enum NOT NULL,
                     entity_id       BIGINT NOT NULL,
                     entity_name     TEXT NOT NULL,
@@ -259,7 +260,7 @@ def update_job_running(job_id: int) -> str | None:
 def update_job_completed(job_id: int) -> str | None:
     """Update job status to completed. Returns previous status string or None.
 
-    Allows transitions: pending -> completed, running -> completed.
+    Allows transitions: pending|running -> completed.
     """
     with _get_conn() as conn:
         with conn.cursor() as cur:
@@ -269,6 +270,35 @@ def update_job_completed(job_id: int) -> str | None:
                 WHERE job_id = %s AND (status = 'pending' OR status = 'running')
                 RETURNING (SELECT status::text FROM prev) as prev_status
             """, (int(job_id), int(job_id)))
+            row = cur.fetchone()
+
+            if row is not None:
+                logger.info("Job %s status updated to completed (was %s)", job_id, row[0])
+                return row[0]
+
+            # UPDATE didn't match — either job doesn't exist or is already completed
+            cur.execute("SELECT status::text FROM jobs WHERE job_id = %s", (int(job_id),))
+            existing = cur.fetchone()
+            if existing is None:
+                logger.debug("Job %s not found in PostgreSQL", job_id)
+                return None
+            return existing[0]
+
+
+def update_job_failed(job_id: int, failure_info: dict) -> str | None:
+    """Update job status to failed. Returns previous status string or None.
+
+    Allows transitions: pending|running -> failed.
+    """
+    assert "version" in failure_info and isinstance(failure_info['version'], int), f"failure_info must have a failure_info['version'] parameter and it must be an int"
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                WITH prev AS (SELECT status FROM jobs WHERE job_id = %s)
+                UPDATE jobs SET status = 'failed', failure_info = %s, updated_at = now()
+                WHERE job_id = %s AND (status = 'pending' OR status = 'running')
+                RETURNING (SELECT status::text FROM prev) as prev_status
+            """, (int(job_id), json.dumps(failure_info), int(job_id)))
             row = cur.fetchone()
 
             if row is not None:
@@ -506,6 +536,7 @@ def sync_worker_status(pods: list[Any], failure_info_by_pod: dict[str, dict]) ->
                     # pending|running -> completed
                     failure_info = failure_info_by_pod.get(pod_name)
                     if failure_info:
+                        assert "version" in failure_info and isinstance(failure_info['version'], int), f"failure_info must have a failure_info['version'] parameter and it must be an int"
                         cur.execute("""
                             UPDATE workers SET status = 'completed', k8s_node = COALESCE(k8s_node, %s),
                                    failure_info = %s, updated_at = now()
