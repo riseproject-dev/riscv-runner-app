@@ -175,7 +175,6 @@ def test_cleanup_deletes_succeeded_pod(mock_delete, mock_list, mock_db):
     """Test that succeeded pods are deleted and removed from worker pool."""
     pod = make_pod("pod-1", phase="Succeeded", entity_id="1000", board="scw-em-rv1")
     mock_list.return_value = [pod]
-    mock_db.get_all_active_job_ids.return_value = set()
     mock_db.init_client.return_value = MagicMock(scan_iter=MagicMock(return_value=[]))
 
     cleanup_pods()
@@ -191,7 +190,6 @@ def test_cleanup_skips_running_pod(mock_delete, mock_list, mock_db):
     """Test that running pods are not deleted."""
     pod = make_pod("pod-1", phase="Running", entity_id="1000", board="scw-em-rv1")
     mock_list.return_value = [pod]
-    mock_db.get_all_active_job_ids.return_value = set()
     mock_db.init_client.return_value = MagicMock(scan_iter=MagicMock(return_value=[]))
 
     cleanup_pods()
@@ -207,7 +205,6 @@ def test_cleanup_handles_delete_failure(mock_delete, mock_list, mock_db):
     """Test that delete failure doesn't crash and doesn't remove worker."""
     pod = make_pod("pod-1", phase="Failed", entity_id="1000", board="scw-em-rv1")
     mock_list.return_value = [pod]
-    mock_db.get_all_active_job_ids.return_value = set()
     mock_db.init_client.return_value = MagicMock(scan_iter=MagicMock(return_value=[]))
 
     cleanup_pods()
@@ -223,7 +220,7 @@ def test_cleanup_handles_delete_failure(mock_delete, mock_list, mock_db):
 def test_gh_reconcile_completes_job(mock_status, mock_auth, mock_db):
     """Test that reconciliation marks a job completed when GH says so."""
     job = make_job(111, status="running")
-    mock_db.get_all_jobs.return_value = ([job], 1)
+    mock_db.get_active_jobs.return_value = [job]
 
     gh_reconcile()
 
@@ -236,7 +233,7 @@ def test_gh_reconcile_completes_job(mock_status, mock_auth, mock_db):
 def test_gh_reconcile_updates_running(mock_status, mock_auth, mock_db):
     """Test that reconciliation updates pending→running when GH says in_progress."""
     job = make_job(111, status="pending")
-    mock_db.get_all_jobs.return_value = ([job], 1)
+    mock_db.get_active_jobs.return_value = [job]
 
     gh_reconcile()
 
@@ -246,7 +243,7 @@ def test_gh_reconcile_updates_running(mock_status, mock_auth, mock_db):
 @patch("scheduler.db")
 def test_gh_reconcile_no_active_jobs(mock_db):
     """Test that reconciliation is a no-op when no active jobs."""
-    mock_db.get_all_jobs.return_value = ([], 0)
+    mock_db.get_active_jobs.return_value = []
 
     gh_reconcile()
 

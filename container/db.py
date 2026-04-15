@@ -401,15 +401,6 @@ def cleanup_job(job_id: int) -> None:
     logger.debug("Cleaned up job %s", job_id)
 
 
-def get_all_active_job_ids() -> set[str]:
-    """Return all job_ids that are not completed."""
-    with _get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT job_id FROM jobs WHERE status = 'pending' OR status = 'running'")
-            rows = cur.fetchall()
-    return {str(row[0]) for row in rows}
-
-
 def get_active_jobs_and_workers() -> tuple[list[dict], list[dict]]:
     """Return (active_jobs, active_workers) as raw rows from PostgreSQL."""
     with _get_conn() as conn:
@@ -431,6 +422,17 @@ def get_active_jobs_and_workers() -> tuple[list[dict], list[dict]]:
             workers = cur.fetchall()
 
     return jobs, workers
+
+def get_active_jobs() -> list[dict]:
+    """Return active_jobs as raw rows from PostgreSQL."""
+    with _get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT *
+                FROM jobs WHERE status = 'pending' OR status = 'running'
+                ORDER BY created_at
+            """)
+            return cur.fetchall()
 
 
 def get_all_jobs(start: str | None = None, end: str | None = None,
@@ -469,17 +471,6 @@ def get_all_jobs(start: str | None = None, end: str | None = None,
             """, page_params)
             rows = cur.fetchall()
     return [_job_row_to_dict(row) for row in rows], total
-
-
-def iter_completed_jobs() -> Iterator[tuple[str, dict[str, str]]]:
-    """Yield (job_id, data_dict) for all completed jobs."""
-    with _get_conn() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT * FROM jobs WHERE status = 'completed'")
-            rows = cur.fetchall()
-    for row in rows:
-        data = _job_row_to_dict(row)
-        yield data["job_id"], data
 
 
 def sync_worker_status(pods: list[Any], failure_info_by_pod: dict[str, dict]) -> None:

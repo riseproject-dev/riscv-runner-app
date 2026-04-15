@@ -30,15 +30,14 @@ def gh_reconcile():
     completed but database disagrees, mark it completed. If GitHub says in_progress
     but database says pending, update to running.
     """
-    jobs, _ = db.get_all_jobs()
+    jobs = db.get_active_jobs()
     if not jobs:
         return
 
     # Group jobs by installation_id to minimize auth calls
     jobs_by_installation = {}
     for job in jobs:
-        if job.get("status") == "completed":
-            continue
+        assert job['status'] in ['pending', 'running'], f'Job job_id={job['job_id']} is not running or pending, status={job['status']}'
         installation_id = job.get("installation_id")
         if installation_id:
             jobs_by_installation.setdefault(installation_id, []).append(job)
