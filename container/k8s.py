@@ -16,7 +16,7 @@ def _init_client():
     return k8s.config.new_client_from_config_dict(yaml.safe_load(K8S_KUBECONFIG))
 
 
-def provision_runner(jit_config, runner_name, k8s_image, k8s_pool, entity_id):
+def provision_runner(jit_config, runner_name, k8s_image, k8s_pool, entity_id, entity_name):
     """Provision a new runner in a Kubernetes pod.
 
     k8s_pool is the board name (e.g. "scw-em-rv1"). The nodeSelector is
@@ -35,6 +35,7 @@ def provision_runner(jit_config, runner_name, k8s_image, k8s_pool, entity_id):
                 "labels": {
                     "app": "rise-riscv-runner",
                     "riseproject.com/entity_id": str(entity_id),
+                    "riseproject.com/entity_name": str(entity_name),
                     "riseproject.com/board": k8s_pool,
                 },
             },

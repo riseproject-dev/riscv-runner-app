@@ -22,7 +22,7 @@ def test_provision_runner_success(mock_core_v1_api, mock_init_client):
     mock_api_instance = MagicMock()
     mock_core_v1_api.return_value = mock_api_instance
 
-    provision_runner("base64-jit-config", "runner-1", "test-image:latest", "scw-em-rv1", 1000)
+    provision_runner("base64-jit-config", "runner-1", "test-image:latest", "scw-em-rv1", 1000, "entity-abc")
 
     mock_api_instance.create_namespaced_pod.assert_called_once()
 
@@ -31,6 +31,7 @@ def test_provision_runner_success(mock_core_v1_api, mock_init_client):
     assert pod_manifest['metadata']['name'] == "runner-1"
     assert pod_manifest['metadata']['labels']['app'] == "rise-riscv-runner"
     assert pod_manifest['metadata']['labels']['riseproject.com/entity_id'] == "1000"
+    assert pod_manifest['metadata']['labels']['riseproject.com/entity_name'] == "entity-abc"
     assert pod_manifest['metadata']['labels']['riseproject.com/board'] == "scw-em-rv1"
     assert 'riseproject.com/job_id' not in pod_manifest['metadata']['labels']
     assert pod_manifest['spec']['nodeSelector'] == {"riseproject.dev/board": "scw-em-rv1"}
@@ -44,7 +45,7 @@ def test_provision_runner_config_exception():
     k8s._init_client.cache_clear()
     try:
         with pytest.raises(Exception):
-            provision_runner("jit-config", "test-pod", "img", "scw-em-rv1", 99999)
+            provision_runner("jit-config", "test-pod", "img", "scw-em-rv1", 99999, "entity-abc")
     finally:
         k8s._init_client.cache_clear()
 
@@ -53,7 +54,7 @@ def test_provision_runner_config_exception():
 def test_provision_runner_api_exception(mock_init_client):
     """Test k8s provisioning failure due to a generic API error."""
     with pytest.raises(Exception) as excinfo:
-        provision_runner("jit-config", "test-pod", "img", "scw-em-rv1", 99999)
+        provision_runner("jit-config", "test-pod", "img", "scw-em-rv1", 99999, "entity-abc")
     assert "Test API Error" == str(excinfo.value)
 
 

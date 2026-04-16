@@ -108,7 +108,7 @@ Scheduler: for each pending job:
   - [org] ensure_runner_group(entity_name, token) -> group_id
   - [org] create_jit_runner_config_org(token, group_id, labels, entity_name, name) -> jit_config
   - [personal] create_jit_runner_config_repo(token, labels, repo_full_name, name) -> jit_config
-  - provision_runner(jit_config, name, image, pool, entity_id) -> pod
+  - provision_runner(jit_config, name, image, pool, entity_id, entity_name) -> pod
 ```
 
 ### Sequence: In-progress webhook

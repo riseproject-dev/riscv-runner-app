@@ -183,7 +183,7 @@ def demand_match():
             else:
                 jit_config = gh.create_jit_runner_config_repo(token, labels, repo_full_name, runner_name)
 
-            k8s.provision_runner(jit_config, runner_name, k8s_image, k8s_pool, entity_id)
+            k8s.provision_runner(jit_config, runner_name, k8s_image, k8s_pool, entity_id, entity_name)
 
             # Update local cache
             entity_worker_counts[entity_id] = entity_worker_counts.get(entity_id, 0) + 1
