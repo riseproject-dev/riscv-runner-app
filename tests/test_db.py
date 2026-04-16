@@ -268,7 +268,7 @@ def test_remove_worker(mock_pool_fn):
     pool, conn, cur = make_mock_pool()
     mock_pool_fn.return_value = pool
 
-    remove_worker(1000, "scw-em-rv1", "pod-1")
+    remove_worker("pod-1")
 
     # Verify UPDATE was called (search_path + UPDATE = 2 execute calls)
     assert cur.execute.call_count >= 1

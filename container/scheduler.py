@@ -244,15 +244,14 @@ def cleanup_pods():
             logger.error("Failed to delete pod %s: %s", pod_name, e)
             continue
 
-        if entity_id and k8s_pool:
-            db.remove_worker(entity_id, k8s_pool, pod_name)
+        db.remove_worker(pod_name)
 
     # Detect orphaned workers (in DB but no corresponding k8s pod)
     active_pod_names = {p.metadata.name for p in pods}
     for entity_id, k8s_pool, pod_name in workers:
         if pod_name not in active_pod_names:
             logger.warning("Worker %s in entity_id %s pool %s has no corresponding pod, removing from DB", pod_name, entity_id, k8s_pool)
-            db.remove_worker(entity_id, k8s_pool, pod_name)
+            db.remove_worker(pod_name)
 
     # Also mark orphaned workers in PostgreSQL (only workers we know about)
     known_worker_pod_names = [pod_name for _, _, pod_name in workers]

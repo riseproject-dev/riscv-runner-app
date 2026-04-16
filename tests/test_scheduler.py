@@ -180,7 +180,7 @@ def test_cleanup_deletes_succeeded_pod(mock_delete, mock_list, mock_db):
     cleanup_pods()
 
     mock_delete.assert_called_once_with(pod)
-    mock_db.remove_worker.assert_called_once_with("1000", "scw-em-rv1", "pod-1")
+    mock_db.remove_worker.assert_called_once_with("pod-1")
 
 
 @patch("scheduler.db")

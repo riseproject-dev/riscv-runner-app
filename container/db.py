@@ -385,7 +385,7 @@ def add_worker(provider: str, entity_id: int, entity_name: str, k8s_pool: str, p
     logger.debug("Added worker %s to pool %s:%s", pod_name, entity_id, k8s_pool)
 
 
-def remove_worker(entity_id: int, k8s_pool: str, pod_name: str) -> None:
+def remove_worker(pod_name: str) -> None:
     """Mark a worker as completed (never delete).
 
     Allows transitions: pending -> completed, running -> completed.
@@ -396,7 +396,7 @@ def remove_worker(entity_id: int, k8s_pool: str, pod_name: str) -> None:
                 UPDATE workers SET status = 'completed', updated_at = now()
                 WHERE pod_name = %s AND (status = 'pending' OR status = 'running')
             """, (pod_name,))
-    logger.debug("Marked worker %s completed in pool %s:%s", pod_name, entity_id, k8s_pool)
+    logger.debug("Marked worker %s completed", pod_name)
 
 
 def iter_workers() -> Iterator[tuple[str, str, str]]:
