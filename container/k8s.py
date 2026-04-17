@@ -59,6 +59,7 @@ def provision_runner(jit_config, runner_name, k8s_image, k8s_pool, entity_id, en
                         ],
                         "env": [
                             {"name": "GITHUB_ACTIONS_RUNNER_TRACE", "value": "1"},
+                            {"name": "RUNNER_WAIT_FOR_DOCKER_IN_SECONDS", "value": "60"},
                             {"name": "DOCKER_HOST", "value": "tcp://localhost:2376"},
                             {"name": "DOCKER_TLS_CERTDIR", "value": "/docker-certs"},
                             {"name": "DOCKER_TLS_VERIFY", "value": "1"},
