@@ -55,7 +55,16 @@ def provision_runner(jit_config, runner_name, k8s_image, k8s_pool, entity_id, en
                         "securityContext": {"privileged": True},
                         "command": ["/bin/bash", "-eux", "-o", "pipefail", "-c"],
                         "args": [
-                            f"./run.sh --jitconfig {jit_config}"
+                            f"""
+                            if [[ -n "${{RUNNER_VERSION+x}}" && -d "/home/runner/actions-runner/cached/${{RUNNER_VERSION}}" ]]; then
+                                /home/runner/actions-runner/cached/${{RUNNER_VERSION}}/run.sh --jitconfig {jit_config}
+                            elif [[ -f ./run.sh ]]; then
+                                ./run.sh --jitconfig {jit_config}
+                            else
+                                echo "can't find ./run.sh"
+                                exit 1
+                            fi
+                            """
                         ],
                         "env": [
                             {"name": "GITHUB_ACTIONS_RUNNER_TRACE", "value": "1"},
