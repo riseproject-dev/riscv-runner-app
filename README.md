@@ -87,7 +87,7 @@ Scheduler (scheduler.py)
 Kubernetes (runner pods)
 ```
 
-Each runner pod is a single container running the unified [riscv-runner-images](https://github.com/riseproject-dev/riscv-runner-images) image, which bundles `dockerd` and `containerd` alongside the GitHub Actions runner. There is no separate Docker-in-Docker sidecar, no init container, and no TLS between the runner and the Docker daemon. The pod runs `privileged: true` so `dockerd` can program iptables and load the bridge module inside the container. JIT runner config is passed via the `RUNNER_JITCONFIG` environment variable; the image's `ENTRYPOINT` (`docker-init` → `riscv-runner-entrypoint.sh`) starts both daemons in the background and then execs `run.sh --jitconfig "$RUNNER_JITCONFIG"`.
+Each runner pod is a single container running the [riscv-runner-images](https://github.com/riseproject-dev/riscv-runner-images) image. The pod runs `privileged: true` (required by the in-pod Docker daemon) and receives its JIT runner config through the `RUNNER_JITCONFIG` environment variable.
 
 Only one scheduler at a time may run `sync_workers_state`: each invocation holds `LOCK TABLE workers IN EXCLUSIVE MODE` for its duration, using a thread-local connection pin (`db.hold_connection`) so all `mark_worker_*` calls share the locked transaction. If a second scheduler container is deployed, it will block on the lock until the first commits.
 
