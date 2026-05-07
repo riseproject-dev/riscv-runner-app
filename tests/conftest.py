@@ -6,10 +6,26 @@ class EntityType(str, Enum):
     ORGANIZATION = "Organization"
     USER = "User"
 
+
+class WebhookOutcome(str, Enum):
+    OK = "ok"
+    JOB_STORED = "job_stored"
+    JOB_ALREADY_EXISTS = "job_already_exists"
+    JOB_MARKED_RUNNING = "job_marked_running"
+    JOB_MARKED_COMPLETED = "job_marked_completed"
+    JOB_NOT_FOUND = "job_not_found"
+    IGNORED_ACTION = "ignored_action"
+    IGNORED_NO_LABEL = "ignored_no_label"
+    IGNORED_EVENT = "ignored_event"
+    AUTH_404 = "auth_404"
+    AUTH_OTHER_ERROR = "auth_other_error"
+
+
 # Mock the constants module before any container module is imported.
 # This avoids requiring real env vars (PROD, PROD_URL, etc.) during tests.
 mock_constants = types.ModuleType("constants")
 mock_constants.EntityType = EntityType
+mock_constants.WebhookOutcome = WebhookOutcome
 mock_constants.PROD = False
 mock_constants.PROD_URL = "https://prod.example.com"
 mock_constants.STAGING_URL = "https://staging.example.com"

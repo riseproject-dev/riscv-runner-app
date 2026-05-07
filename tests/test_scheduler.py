@@ -103,7 +103,8 @@ def test_demand_match_provisions_org_job(mock_jit, mock_group, mock_auth, mock_p
 
     demand_match()
 
-    mock_auth.assert_called_once_with(999, entity_type=EntityType.ORGANIZATION)
+    from constants import GHAPP_ORG_ID
+    mock_auth.assert_called_once_with(999, GHAPP_ORG_ID)
     mock_group.assert_called_once()
     mock_jit.assert_called_once()
     mock_provision.assert_called_once()
@@ -125,7 +126,8 @@ def test_demand_match_provisions_personal_job(mock_jit_repo, mock_auth, mock_pro
 
     demand_match()
 
-    mock_auth.assert_called_once_with(999, entity_type=EntityType.USER)
+    from constants import GHAPP_PERSONAL_ID
+    mock_auth.assert_called_once_with(999, GHAPP_PERSONAL_ID)
     mock_jit_repo.assert_called_once()
     # Verify repo_full_name is passed
     call_args = mock_jit_repo.call_args

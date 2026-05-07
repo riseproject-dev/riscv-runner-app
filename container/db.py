@@ -272,7 +272,7 @@ def ensure_schema() -> None:
             """)
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS idx_install_events_installation
-                ON installation_events (installation_id, received_at DESC)
+                ON installation_events (installation_id, entity_id)
             """)
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS idx_install_events_entity

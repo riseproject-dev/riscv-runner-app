@@ -5,6 +5,21 @@ class EntityType(str, Enum):
     ORGANIZATION = "Organization"
     USER = "User"
 
+
+class WebhookOutcome(str, Enum):
+    """Stored verbatim in installation_events.outcome (TEXT column)."""
+    OK = "ok"
+    JOB_STORED = "job_stored"
+    JOB_ALREADY_EXISTS = "job_already_exists"
+    JOB_MARKED_RUNNING = "job_marked_running"
+    JOB_MARKED_COMPLETED = "job_marked_completed"
+    JOB_NOT_FOUND = "job_not_found"
+    IGNORED_ACTION = "ignored_action"
+    IGNORED_NO_LABEL = "ignored_no_label"
+    IGNORED_EVENT = "ignored_event"
+    AUTH_404 = "auth_404"
+    AUTH_OTHER_ERROR = "auth_other_error"
+
 PROD = os.environ["PROD"].lower() == "true"
 PROD_URL = os.environ["PROD_URL"]
 STAGING_URL = os.environ["STAGING_URL"]

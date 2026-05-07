@@ -91,15 +91,11 @@ def test_match_labels_riscv():
 
 
 def test_match_labels_unsupported():
-    with pytest.raises(WebhookError) as exc:
-        match_labels_to_k8s(0, "", ["unsupported-label"])
-    assert "missing required platform label" in exc.value.message
+    assert match_labels_to_k8s(0, "", ["unsupported-label"]) is None
 
 
 def test_match_labels_missing_platform():
-    with pytest.raises(WebhookError) as exc:
-        match_labels_to_k8s(0, "", ["random-label"])
-    assert "missing required platform label" in exc.value.message
+    assert match_labels_to_k8s(0, "", ["random-label"]) is None
 
 
 # --- Webhook integration ---
@@ -189,6 +185,7 @@ def test_webhook_in_progress(mock_update):
         "action": "in_progress",
         "workflow_job": {"id": 12345, "name": "test", "labels": ["ubuntu-24.04-riscv"], "runner_name": "my-runner"},
         "repository": {"id": 100, "full_name": "riseproject-dev/sample", "owner": {"id": 152654596, "login": "riseproject-dev", "type": "Organization"}},
+        "installation": {"id": 999},
     }
     body = json.dumps(payload)
     sig = "sha256=" + compute_signature(body, GHAPP_WEBHOOK_SECRET).hexdigest()
@@ -214,6 +211,7 @@ def test_webhook_completed(mock_complete):
         "action": "completed",
         "workflow_job": {"id": 12345, "name": "test", "labels": ["ubuntu-24.04-riscv"], "runner_name": "my-runner"},
         "repository": {"id": 100, "full_name": "riseproject-dev/sample", "owner": {"id": 152654596, "login": "riseproject-dev", "type": "Organization"}},
+        "installation": {"id": 999},
     }
     body = json.dumps(payload)
     sig = "sha256=" + compute_signature(body, GHAPP_WEBHOOK_SECRET).hexdigest()
@@ -493,6 +491,7 @@ def test_webhook_workflow_job_in_progress_logs_marked_running(mock_mr, _mock_add
         "workflow_job": {"id": 12345, "name": "test", "labels": ["ubuntu-24.04-riscv"], "runner_name": "rn"},
         "repository": {"id": 100, "full_name": "o/r",
                        "owner": {"id": 152654596, "login": "o", "type": "Organization"}},
+        "installation": {"id": 999},
     }
     body = json.dumps(payload)
     with app.test_client() as client:
@@ -511,6 +510,7 @@ def test_webhook_workflow_job_in_progress_not_found(mock_mr, _mock_add_installat
         "workflow_job": {"id": 12345, "name": "test", "labels": ["ubuntu-24.04-riscv"]},
         "repository": {"id": 100, "full_name": "o/r",
                        "owner": {"id": 152654596, "login": "o", "type": "Organization"}},
+        "installation": {"id": 999},
     }
     body = json.dumps(payload)
     with app.test_client() as client:
@@ -528,6 +528,7 @@ def test_webhook_workflow_job_completed_logs_marked_completed(mock_mc, _mock_add
         "workflow_job": {"id": 12345, "name": "test", "labels": ["ubuntu-24.04-riscv"]},
         "repository": {"id": 100, "full_name": "o/r",
                        "owner": {"id": 152654596, "login": "o", "type": "Organization"}},
+        "installation": {"id": 999},
     }
     body = json.dumps(payload)
     with app.test_client() as client:
@@ -543,7 +544,14 @@ def test_webhook_workflow_job_unknown_action_logs_ignored_action(_mock_add_insta
     workflow_job actions like 'waiting' now reach the workflow_job branch and
     log outcome='ignored_action' instead of being rejected wholesale."""
     from ghfe import app
-    body = json.dumps({"action": "waiting", "workflow_job": {}, "repository": {}})
+    payload = {
+        "action": "waiting",
+        "workflow_job": {},
+        "repository": {"id": 100, "full_name": "o/r",
+                       "owner": {"id": 152654596, "login": "o", "type": "Organization"}},
+        "installation": {"id": 999},
+    }
+    body = json.dumps(payload)
     with app.test_client() as client:
         resp = _post_webhook(client, body, "workflow_job")
         assert resp.status_code == 200

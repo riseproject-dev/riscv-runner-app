@@ -103,16 +103,17 @@ def check_webhook_signature(headers, body):
     return event, body
 
 
-def _log_webhook_event(*, event, outcome, payload, app_id,
-                       installation_id=None, entity_type=None,
-                       entity_id=None, entity_name=None):
-    """Insert one installation_events row for a webhook delivery.
-
-    All fields are passed explicitly by the caller (each branch of
-    `webhook()` knows the exact payload shape for its event type and does
-    its own extraction). The helper just normalises `source="webhook"` and
-    handles the exception logging.
-    """
+def _log_webhook_event(
+    *,
+    event: str,
+    outcome: WebhookOutcome,
+    payload: dict,
+    app_id: int,
+    installation_id: int | None = None,
+    entity_type: str | None = None,
+    entity_id: int | None = None,
+    entity_name: str | None = None,
+) -> None:
     try:
         db.add_installation_event(
             source="webhook",
@@ -126,8 +127,6 @@ def _log_webhook_event(*, event, outcome, payload, app_id,
             entity_name=entity_name,
         )
     except Exception:
-        # Bubble up so the caller's transaction view is honest, but make sure
-        # the response logs the original event/outcome for debugging.
         logger.exception("Failed to record installation_events row event=%s outcome=%s", event, outcome)
         raise
 
@@ -154,8 +153,7 @@ def match_labels_to_k8s(org_id, repo_full_name, job_labels):
     """
     Map workflow job labels to a k8s pool name and container image.
 
-    Returns (k8s_pool, k8s_image) where k8s_pool is the board name string
-    used as k8s pool key and pod label.
+    Returns (k8s_pool, k8s_image) on a match, or None if no rule matches.
     """
     # Special case(s) for PyTorch org
     if org_id == PYTORCH_ORG_ID or (org_id == RISEPROJECT_DEV_ORG_ID and repo_full_name in ["riseproject-dev/pytorch", "riseproject-dev/executorch"]):
@@ -164,14 +162,14 @@ def match_labels_to_k8s(org_id, repo_full_name, job_labels):
         elif "ubuntu-24.04-riscv" in job_labels:
             return "scw-em-rv1", RUNNER_IMAGE_UBUNTU_24_04
         else:
-            raise WebhookError(200, f"Ignoring job: missing required platform label (got {job_labels}) for PyTorch org")
+            return None
 
     # Special case(s) for GGML org
     elif org_id == GGML_ORG_ORG_ID or (org_id == RISEPROJECT_DEV_ORG_ID and repo_full_name in ["riseproject-dev/llama.cpp", "riseproject-dev/llama.cpp-validation"]):
         if job_labels == ["ubuntu-24.04-riscv"]:
             return "cloudv10x-jupiter", RUNNER_IMAGE_UBUNTU_24_04
         else:
-            raise WebhookError(200, f"Ignoring job: missing required platform label (got {job_labels}) for GGML org")
+            return None
 
     # General cases
     elif job_labels == ["ubuntu-24.04-riscv"]:
@@ -180,7 +178,7 @@ def match_labels_to_k8s(org_id, repo_full_name, job_labels):
     # elif job_labels == ["ubuntu-26.04-riscv"]:
     #     return "scw-em-rv1", RUNNER_IMAGE_UBUNTU_26_04
 
-    raise WebhookError(200, f"Ignoring job: missing required platform label (got {job_labels})")
+    return None
 
 
 # --- Routes ---
@@ -353,79 +351,78 @@ def webhook():
         raise WebhookError(400, "Invalid X-GitHub-Hook-Installation-Target-Id header")
 
     if event == "ping":
-        _log_webhook_event(event="ping", outcome="ok", payload=payload, app_id=app_id)
+        _log_webhook_event(event="ping", outcome=WebhookOutcome.OK, payload=payload, app_id=app_id)
         return f"pong"
 
     elif event == "installation":
         action = payload["action"]
         install = payload["installation"]
-        account = install.get("account") or {}
+        account = install["account"]
         _log_webhook_event(
-            event=f"installation.{action}",
-            outcome="ok",
+            event=f"{event}.{action}",
+            outcome=WebhookOutcome.OK,
             payload=payload,
             app_id=app_id,
-            installation_id=install.get("id"),
-            entity_type=install.get("target_type") or account.get("type"),
-            entity_id=install.get("target_id") or account.get("id"),
-            entity_name=account.get("login"),
+            installation_id=install["id"],
+            entity_type=install["target_type"],
+            entity_id=install["target_id"],
+            entity_name=account["login"],
         )
-        return f"installation.{action} logged"
+        return f"{event}.{action} logged"
 
     elif event == "installation_repositories":
         action = payload["action"]
         install = payload["installation"]
-        account = install.get("account") or {}
+        account = install["account"]
         _log_webhook_event(
-            event=f"installation_repositories.{action}",
-            outcome="ok",
+            event=f"{event}.{action}",
+            outcome=WebhookOutcome.OK,
             payload=payload,
             app_id=app_id,
-            installation_id=install.get("id"),
-            entity_type=install.get("target_type") or account.get("type"),
-            entity_id=install.get("target_id") or account.get("id"),
-            entity_name=account.get("login"),
+            installation_id=install["id"],
+            entity_type=install["target_type"],
+            entity_id=install["target_id"],
+            entity_name=account["login"],
         )
-        return f"installation_repositories.{action} logged"
+        return f"{event}.{action} logged"
 
     elif event == "installation_target":
         action = payload["action"]
         # `installation_target.renamed` carries the new account at top level;
-        # `installation.account` would be the pre-rename name, which is the wrong one.
-        account = payload.get("account") or {}
-        install = payload.get("installation") or {}
+        # `installation.account` would be the pre-rename name.
+        account = payload["account"]
+        install = payload["installation"]
         _log_webhook_event(
-            event=f"installation_target.{action}",
-            outcome="ok",
+            event=f"{event}.{action}",
+            outcome=WebhookOutcome.OK,
             payload=payload,
             app_id=app_id,
-            installation_id=install.get("id"),
-            entity_type=payload.get("target_type") or account.get("type"),
-            entity_id=account.get("id") or install.get("target_id"),
-            entity_name=account.get("login"),
+            installation_id=install["id"],
+            entity_type=payload["target_type"],
+            entity_id=account["id"],
+            entity_name=account["login"],
         )
-        return f"installation_target.{action} logged"
+        return f"{event}.{action} logged"
 
     elif event == "workflow_job":
         action = payload["action"]
-        wj_event = f"workflow_job.{action}"
 
-        # workflow_job's `installation` object is just `{id, node_id}` — no
-        # account info. Pull the entity from `repository.owner` instead.
-        wj_install = payload.get("installation") or {}
-        wj_owner = (payload.get("repository") or {}).get("owner") or {}
-        wj_log = dict(
+        # workflow_job's `installation` object is just `{id, node_id}` — pull
+        # the entity from `repository.owner` instead.
+        install = payload["installation"]
+        owner = payload["repository"]["owner"]
+        log_fields = dict(
             payload=payload,
             app_id=app_id,
-            installation_id=wj_install.get("id"),
-            entity_type=wj_owner.get("type"),
-            entity_id=wj_owner.get("id"),
-            entity_name=wj_owner.get("login"),
+            installation_id=install["id"],
+            entity_type=owner["type"],
+            entity_id=owner["id"],
+            entity_name=owner["login"],
         )
 
         # Ignore workflow_job actions we don't process (e.g. 'waiting').
         if action not in ("queued", "in_progress", "completed"):
-            _log_webhook_event(event=wj_event, outcome="ignored_action", **wj_log)
+            _log_webhook_event(event=f"{event}.{action}", outcome=WebhookOutcome.IGNORED_ACTION, **log_fields)
             logger.debug("Ignoring action: %s", action)
             return f"Ignoring action: {action}"
 
@@ -461,19 +458,17 @@ def webhook():
         if not repo_id:
             raise WebhookError(400, "Repository ID is missing in payload")
 
-        # entity_id: owner_id (org) for organizations, repo_id for personal accounts
-        entity_id = owner_id if entity_type == EntityType.ORGANIZATION else repo_id
+        # entity_id: owner_id (org) for organizations, repo_id for personal accounts.
         # The log row records the same `entity_id` `add_job` would store.
-        wj_log["entity_id"] = entity_id
+        entity_id = owner_id if entity_type == EntityType.ORGANIZATION else repo_id
+        log_fields["entity_id"] = entity_id
 
-        # Make sure the required labels are present; Filters out unsupported jobs early.
-        # If labels don't match, log + return — the WebhookError gets caught here so we
-        # can still record an `ignored_no_label` row before propagating the response.
-        try:
-            k8s_pool, k8s_image = match_labels_to_k8s(owner_id, repo_full_name, job_labels)
-        except WebhookError as e:
-            _log_webhook_event(event=wj_event, outcome="ignored_no_label", **wj_log)
-            raise
+        # Filter out unsupported jobs early.
+        match = match_labels_to_k8s(owner_id, repo_full_name, job_labels)
+        if match is None:
+            _log_webhook_event(event=f"{event}.{action}", outcome=WebhookOutcome.IGNORED_NO_LABEL, **log_fields)
+            raise WebhookError(200, f"Ignoring job: missing required platform label (got {job_labels})")
+        k8s_pool, k8s_image = match
 
         logger.info("Received %s workflow_job id=%s name=%s repo=%s labels=%s entity_type=%s",
                     action, job_id, payload["workflow_job"]["name"],
@@ -511,8 +506,8 @@ def webhook():
                 html_url=html_url,
             )
 
-            outcome = "job_stored" if stored else "job_already_exists"
-            _log_webhook_event(event=wj_event, outcome=outcome, **wj_log)
+            outcome = WebhookOutcome.JOB_STORED if stored else WebhookOutcome.JOB_ALREADY_EXISTS
+            _log_webhook_event(event=f"{event}.{action}", outcome=outcome, **log_fields)
 
             if stored:
                 return f"Job {job_id} stored."
@@ -521,8 +516,8 @@ def webhook():
 
         elif action == "in_progress":
             prev_status = db.mark_job_running(job_id, payload["workflow_job"].get("runner_name"))
-            outcome = "job_not_found" if prev_status is None else "job_marked_running"
-            _log_webhook_event(event=wj_event, outcome=outcome, **wj_log)
+            outcome = WebhookOutcome.JOB_NOT_FOUND if prev_status is None else WebhookOutcome.JOB_MARKED_RUNNING
+            _log_webhook_event(event=f"{event}.{action}", outcome=outcome, **log_fields)
             if prev_status is None:
                 logger.warning("Job %s not found on in_progress event", job_id)
                 return f"Job {job_id} not found."
@@ -531,15 +526,15 @@ def webhook():
 
         elif action == "completed":
             prev_status = db.mark_job_completed(job_id, payload["workflow_job"].get("runner_name"))
-            outcome = "job_not_found" if prev_status is None else "job_marked_completed"
-            _log_webhook_event(event=wj_event, outcome=outcome, **wj_log)
+            outcome = WebhookOutcome.JOB_NOT_FOUND if prev_status is None else WebhookOutcome.JOB_MARKED_COMPLETED
+            _log_webhook_event(event=f"{event}.{action}", outcome=outcome, **log_fields)
             if prev_status is None:
                 logger.warning("Job %s not found on completed event", job_id)
                 return f"Job {job_id} not found."
             return f"Job {job_id} completed (was {prev_status})."
 
     else:
-        _log_webhook_event(event=event, outcome="ignored_event", payload=payload, app_id=app_id)
+        _log_webhook_event(event=event, outcome=WebhookOutcome.IGNORED_EVENT, payload=payload, app_id=app_id)
         return f"Ignoring {event} event"
 
 if __name__ == "__main__":

@@ -37,11 +37,11 @@ def _gh_authenticate_app(installation_id, entity_type, *, job_id=None,
     cache itself doesn't store exceptions, so transient errors won't poison
     subsequent calls.
     """
+    app_id = GHAPP_PERSONAL_ID if entity_type == EntityType.USER else GHAPP_ORG_ID
     try:
-        return gh.authenticate_app(int(installation_id), entity_type=entity_type)
+        return gh.authenticate_app(int(installation_id), app_id)
     except gh.GitHubAPIError as e:
-        app_id = GHAPP_PERSONAL_ID if entity_type == EntityType.USER else GHAPP_ORG_ID
-        outcome = "auth_404" if e.status_code == 404 else "auth_other_error"
+        outcome = WebhookOutcome.AUTH_404 if e.status_code == 404 else WebhookOutcome.AUTH_OTHER_ERROR
         event_str = (f"auth_attempt.{e.status_code}"
                      if e.status_code == 404
                      else "auth_attempt.other_error")
