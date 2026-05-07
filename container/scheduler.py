@@ -103,8 +103,8 @@ def sync_jobs_state():
                 int(installation_id), entity_type=entity_type,
                 job_id=job_id,
                 repo_full_name=repo,
-                entity_id=job.get("entity_id"),
-                entity_name=job.get("entity_name"),
+                entity_id=job["entity_id"],
+                entity_name=job["entity_name"],
             )
         except gh.GitHubAPIError as e:
             if e.status_code == 404:
