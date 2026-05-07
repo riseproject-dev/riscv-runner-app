@@ -98,6 +98,18 @@ def test_match_labels_missing_platform():
     assert match_labels_to_k8s(0, "", ["random-label"]) is None
 
 
+def test_match_labels_pytorch_org_no_match():
+    """PyTorch org with non-PyTorch labels → no match (covers the org-specific
+    no-match branch separately from the general-case fall-through)."""
+    from constants import PYTORCH_ORG_ID
+    assert match_labels_to_k8s(PYTORCH_ORG_ID, "", ["ubuntu-latest"]) is None
+
+
+def test_match_labels_ggml_org_no_match():
+    from constants import GGML_ORG_ORG_ID
+    assert match_labels_to_k8s(GGML_ORG_ORG_ID, "", ["ubuntu-latest"]) is None
+
+
 # --- Webhook integration ---
 
 @patch("db.add_job", return_value=True)
