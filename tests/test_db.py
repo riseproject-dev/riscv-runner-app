@@ -479,12 +479,11 @@ def test_add_installation_event_inserts_row(mock_pool_fn):
         source="webhook",
         event="installation.created",
         outcome="ok",
-        delivery_id="11111111-2222-3333-4444-555555555555",
         installation_id=999,
         app_id=2167633,
         entity_type="Organization",
         entity_id=152654596,
-        account_login="riseproject-dev",
+        entity_name="riseproject-dev",
         payload={"installation": {"id": 999}, "action": "created"},
     )
 

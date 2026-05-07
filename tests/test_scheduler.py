@@ -2036,7 +2036,7 @@ def test_gh_authenticate_app_success_no_log(mock_auth, mock_log):
     mock_auth.return_value = "tok-abc"
 
     token = _gh_authenticate_app(999, EntityType.ORGANIZATION,
-                                 entity_id=152654596, account_login="riseproject-dev")
+                                 entity_id=152654596, entity_name="riseproject-dev")
 
     assert token == "tok-abc"
     mock_log.assert_not_called()
@@ -2051,7 +2051,7 @@ def test_gh_authenticate_app_404_logs_and_reraises(mock_auth, mock_log):
     with pytest.raises(GitHubAPIError):
         _gh_authenticate_app(999, EntityType.ORGANIZATION,
                              job_id=12345, repo_full_name="o/r",
-                             entity_id=152654596, account_login="o")
+                             entity_id=152654596, entity_name="o")
 
     mock_log.assert_called_once()
     kwargs = mock_log.call_args.kwargs
@@ -2060,7 +2060,7 @@ def test_gh_authenticate_app_404_logs_and_reraises(mock_auth, mock_log):
     assert kwargs["outcome"] == "auth_404"
     assert kwargs["installation_id"] == 999
     assert kwargs["entity_id"] == 152654596
-    assert kwargs["account_login"] == "o"
+    assert kwargs["entity_name"] == "o"
     payload = kwargs["payload"]
     assert payload["installation_id"] == 999
     assert payload["http_status"] == 404
@@ -2076,7 +2076,7 @@ def test_gh_authenticate_app_other_error_logs_and_reraises(mock_auth, mock_log):
 
     with pytest.raises(GitHubAPIError):
         _gh_authenticate_app(999, EntityType.USER,
-                             entity_id=660779, account_login="luhenry")
+                             entity_id=660779, entity_name="luhenry")
 
     mock_log.assert_called_once()
     kwargs = mock_log.call_args.kwargs

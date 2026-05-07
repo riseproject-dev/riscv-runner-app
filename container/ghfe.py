@@ -102,8 +102,7 @@ def check_webhook_signature(headers, body):
     return event, body
 
 
-def _log_webhook_event(*, delivery_id, hook_target_id, event, payload,
-                       outcome, **overrides):
+def _log_webhook_event(*, hook_target_id, event, payload, outcome, **overrides):
     """Insert one installation_events row for a webhook delivery.
 
     `event` and `payload` are caller-built. The helper extracts
@@ -111,15 +110,20 @@ def _log_webhook_event(*, delivery_id, hook_target_id, event, payload,
     `hook_target_id` (X-GitHub-Hook-Installation-Target-Id, the delivering
     app's id) when `payload.installation.app_id` is absent — needed for
     workflow_job deliveries whose installation object is just a stub.
+    `entity_name` mirrors `add_job` semantics: the owner login, taken from
+    `installation.account.login` (or top-level `account.login` for
+    installation_target.renamed) and falling back to
+    `repository.owner.login` for workflow_job payloads.
     """
     install = payload.get("installation") or {}
     account = install.get("account") or payload.get("account") or {}
+    repo_owner = (payload.get("repository") or {}).get("owner") or {}
     fields = dict(
         installation_id=install.get("id"),
         app_id=install.get("app_id") or hook_target_id,
-        entity_type=install.get("target_type") or account.get("type"),
-        entity_id=install.get("target_id") or account.get("id"),
-        account_login=account.get("login"),
+        entity_type=install.get("target_type") or account.get("type") or repo_owner.get("type"),
+        entity_id=install.get("target_id") or account.get("id") or repo_owner.get("id"),
+        entity_name=account.get("login") or repo_owner.get("login"),
     )
     fields.update(overrides)
     try:
@@ -127,7 +131,6 @@ def _log_webhook_event(*, delivery_id, hook_target_id, event, payload,
             source="webhook",
             event=event,
             outcome=outcome,
-            delivery_id=delivery_id,
             payload=payload,
             **fields,
         )
@@ -364,9 +367,8 @@ def webhook():
         logger.debug("Invalid JSON payload")
         raise WebhookError(400, "Invalid JSON payload")
 
-    delivery_id = request.headers.get("X-GitHub-Delivery")
     hook_target_id = _parse_hook_target_id(request.headers)
-    log_ctx = {"delivery_id": delivery_id, "hook_target_id": hook_target_id, "payload": payload}
+    log_ctx = {"hook_target_id": hook_target_id, "payload": payload}
 
     if event == "ping":
         _log_webhook_event(event="ping", outcome="ok", **log_ctx)

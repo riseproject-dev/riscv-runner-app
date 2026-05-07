@@ -179,13 +179,6 @@ def ensure_schema() -> None:
             """)
             cur.execute("""
                 DO $$ BEGIN
-                    CREATE TYPE event_source_enum AS ENUM ('webhook', 'scheduler');
-                EXCEPTION
-                    WHEN duplicate_object THEN null;
-                END $$
-            """)
-            cur.execute("""
-                DO $$ BEGIN
                     CREATE TYPE entity_type_enum AS ENUM ('Organization', 'User');
                 EXCEPTION
                     WHEN duplicate_object THEN null;
@@ -265,15 +258,14 @@ def ensure_schema() -> None:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS installation_events (
                     id                BIGSERIAL PRIMARY KEY,
-                    source            event_source_enum NOT NULL,
+                    source            TEXT NOT NULL,
                     event             TEXT NOT NULL,
                     outcome           TEXT NOT NULL,
-                    delivery_id       UUID,
                     installation_id   BIGINT,
                     app_id            BIGINT,
                     entity_type       entity_type_enum,
                     entity_id         BIGINT,
-                    account_login     TEXT,
+                    entity_name       TEXT,
                     payload           JSONB NOT NULL,
                     received_at       TIMESTAMPTZ NOT NULL DEFAULT now()
                 )
@@ -283,8 +275,8 @@ def ensure_schema() -> None:
                 ON installation_events (installation_id, received_at DESC)
             """)
             cur.execute("""
-                CREATE INDEX IF NOT EXISTS idx_install_events_account
-                ON installation_events (account_login, received_at DESC)
+                CREATE INDEX IF NOT EXISTS idx_install_events_entity_name
+                ON installation_events (entity_name, received_at DESC)
             """)
             cur.execute("""
                 CREATE INDEX IF NOT EXISTS idx_install_events_entity
@@ -732,34 +724,31 @@ def add_installation_event(
     event: str,
     outcome: str,
     payload: dict,
-    delivery_id: str | None = None,
     installation_id: int | None = None,
     app_id: int | None = None,
     entity_type: str | None = None,
     entity_id: int | None = None,
-    account_login: str | None = None,
+    entity_name: str | None = None,
 ) -> int:
     """Insert one installation_events row. Returns the new BIGSERIAL id.
 
     `payload` is required (the column is JSONB NOT NULL); pass {} when there's
-    nothing to log. No ON CONFLICT — `delivery_id` isn't unique, so a redelivered
-    webhook produces a duplicate log row, which the trace tool dedupes at read
-    time. Caller is responsible for calling this in its own transaction (separate
-    from any side-effect writes); see the webhook handler.
+    nothing to log. Caller is responsible for calling this in its own
+    transaction (separate from any side-effect writes); see the webhook handler.
     """
     assert payload is not None, "payload is required (pass {} for empty)"
     with _get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO installation_events
-                    (source, event, outcome, delivery_id,
+                    (source, event, outcome,
                      installation_id, app_id, entity_type, entity_id,
-                     account_login, payload)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     entity_name, payload)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
-            """, (source, event, outcome, delivery_id,
+            """, (source, event, outcome,
                   installation_id, app_id, entity_type, entity_id,
-                  account_login, json.dumps(payload)))
+                  entity_name, json.dumps(payload)))
             return cur.fetchone()[0]
 
 
@@ -774,9 +763,9 @@ def get_events_by_entity_id(entity_id: int) -> list[psycopg2.extras.RealDictRow]
     with _get_conn() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
-                SELECT id, source, event, outcome, delivery_id,
+                SELECT id, source, event, outcome,
                        installation_id, app_id, entity_type, entity_id,
-                       account_login, received_at,
+                       entity_name, received_at,
                        CASE WHEN event LIKE 'workflow_job.%%'
                             THEN payload->'workflow_job'->>'id' END AS job_id,
                        CASE WHEN event LIKE 'workflow_job.%%'

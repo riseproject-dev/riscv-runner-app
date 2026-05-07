@@ -29,7 +29,7 @@ POLL_INTERVAL = 15
 
 def _gh_authenticate_app(installation_id, entity_type, *, job_id=None,
                          repo_full_name=None, repo_id=None,
-                         entity_id=None, account_login=None):
+                         entity_id=None, entity_name=None):
     """Wrap gh.authenticate_app and log every failure to installation_events.
 
     Successful auths are not logged (gh.authenticate_app's @ttl_cache makes
@@ -50,7 +50,7 @@ def _gh_authenticate_app(installation_id, entity_type, *, job_id=None,
             "app_id": app_id,
             "entity_type": entity_type.value,
             "entity_id": entity_id,
-            "account_login": account_login,
+            "entity_name": entity_name,
             "repository": ({"id": repo_id, "full_name": repo_full_name}
                            if repo_full_name else None),
             "workflow_job": {"id": job_id} if job_id else None,
@@ -66,7 +66,7 @@ def _gh_authenticate_app(installation_id, entity_type, *, job_id=None,
                 app_id=app_id,
                 entity_type=entity_type.value,
                 entity_id=entity_id,
-                account_login=account_login,
+                entity_name=entity_name,
                 payload=synthetic_payload,
             )
         except Exception:
@@ -104,7 +104,7 @@ def sync_jobs_state():
                 job_id=job_id,
                 repo_full_name=repo,
                 entity_id=job.get("entity_id"),
-                account_login=job.get("entity_name"),
+                entity_name=job.get("entity_name"),
             )
         except gh.GitHubAPIError as e:
             if e.status_code == 404:
@@ -283,7 +283,7 @@ def _sync_workers_state_phase_3_health_checks(pods_by_name, workers_by_name, gh_
             token = _gh_authenticate_app(
                 installation_id, entity_type=entity_type,
                 entity_id=entity_id,
-                account_login=(gh_runner_target if entity_type == EntityType.ORGANIZATION else None),
+                entity_name=(gh_runner_target if entity_type == EntityType.ORGANIZATION else None),
                 repo_full_name=(gh_runner_target if entity_type == EntityType.USER else None),
             )
         except gh.GitHubAPIError as e:
@@ -385,7 +385,7 @@ def _sync_workers_state_phase_4_gh_cleanup(workers_by_name, gh_runners_by_target
             token = _gh_authenticate_app(
                 installation_id, entity_type=entity_type,
                 entity_id=entity_id,
-                account_login=(gh_runner_target if entity_type == EntityType.ORGANIZATION else None),
+                entity_name=(gh_runner_target if entity_type == EntityType.ORGANIZATION else None),
                 repo_full_name=(gh_runner_target if entity_type == EntityType.USER else None),
             )
         except gh.GitHubAPIError as e:
@@ -549,7 +549,7 @@ def demand_match():
                 token = _gh_authenticate_app(
                     int(installation_id), entity_type=entity_type,
                     entity_id=entity_id,
-                    account_login=entity_name,
+                    entity_name=entity_name,
                     repo_full_name=repo_full_name,
                 )
 

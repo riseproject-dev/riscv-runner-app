@@ -72,14 +72,14 @@ def _short(s: str | None, n: int) -> str:
 
 def render_table(events: list[dict]) -> None:
     """Print a chronological table — one row per event."""
-    cols = ("received_at", "event", "outcome", "repo_full_name", "job_id", "delivery_id")
+    cols = ("received_at", "event", "outcome", "entity_name", "repo_full_name", "job_id")
     widths = {
         "received_at": 26,
         "event": 36,
         "outcome": 22,
+        "entity_name": 24,
         "repo_full_name": 36,
         "job_id": 14,
-        "delivery_id": 36,
     }
     header = "  ".join(f"{c:<{widths[c]}}" for c in cols)
     print(header)
@@ -89,9 +89,9 @@ def render_table(events: list[dict]) -> None:
             "received_at": _short(e.get("received_at"), widths["received_at"]),
             "event": _short(e.get("event"), widths["event"]),
             "outcome": _short(e.get("outcome"), widths["outcome"]),
+            "entity_name": _short(e.get("entity_name"), widths["entity_name"]),
             "repo_full_name": _short(e.get("repo_full_name"), widths["repo_full_name"]),
             "job_id": _short(e.get("job_id"), widths["job_id"]),
-            "delivery_id": _short(e.get("delivery_id"), widths["delivery_id"]),
         }
         print("  ".join(f"{row[c]:<{widths[c]}}" for c in cols))
 

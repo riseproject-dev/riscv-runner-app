@@ -312,7 +312,6 @@ def test_setup_upstream_error(mock_get_installation):
 # --- Installation event logging on the webhook handler ---
 
 DELIVERY_HEADERS = {
-    "X-GitHub-Delivery": "11111111-2222-3333-4444-555555555555",
     "X-GitHub-Hook-Installation-Target-Id": "2167633",
 }
 
@@ -384,7 +383,7 @@ def test_webhook_installation_created_logs(_mock_add_installation_event):
     assert kwargs["installation_id"] == 999
     assert kwargs["app_id"] == 2167633
     assert kwargs["entity_id"] == 152654596
-    assert kwargs["account_login"] == "riseproject-dev"
+    assert kwargs["entity_name"] == "riseproject-dev"
 
 
 def test_webhook_installation_repositories_added_logs(_mock_add_installation_event):
@@ -422,7 +421,7 @@ def test_webhook_installation_target_renamed_logs(_mock_add_installation_event):
         assert resp.status_code == 200
     kwargs = _last_log_call(_mock_add_installation_event)
     assert kwargs["event"] == "installation_target.renamed"
-    assert kwargs["account_login"] == "renamed-org"
+    assert kwargs["entity_name"] == "renamed-org"
 
 
 def test_webhook_unhandled_event_logs_ignored_event(_mock_add_installation_event):
