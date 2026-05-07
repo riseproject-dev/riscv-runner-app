@@ -275,10 +275,6 @@ def ensure_schema() -> None:
                 ON installation_events (installation_id, received_at DESC)
             """)
             cur.execute("""
-                CREATE INDEX IF NOT EXISTS idx_install_events_entity_name
-                ON installation_events (entity_name, received_at DESC)
-            """)
-            cur.execute("""
                 CREATE INDEX IF NOT EXISTS idx_install_events_entity
                 ON installation_events (entity_id, received_at DESC)
             """)

@@ -6,6 +6,7 @@ import requests
 import time
 
 from flask import Flask, g, request, make_response
+from flask.json import dumps as json_dumps
 
 import db
 import github as gh
@@ -102,37 +103,27 @@ def check_webhook_signature(headers, body):
     return event, body
 
 
-def _log_webhook_event(*, hook_target_id, event, payload, outcome, **overrides):
+def _log_webhook_event(*, event, outcome, payload, app_id,
+                       installation_id=None, entity_type=None,
+                       entity_id=None, entity_name=None):
     """Insert one installation_events row for a webhook delivery.
 
-    `event` and `payload` are caller-built. The helper extracts
-    installation/account fields from `payload` and falls back to
-    `hook_target_id` (X-GitHub-Hook-Installation-Target-Id, the delivering
-    app's id) when `payload.installation.app_id` is absent — needed for
-    workflow_job deliveries whose installation object is just a stub.
-    `entity_name` mirrors `add_job` semantics: the owner login, taken from
-    `installation.account.login` (or top-level `account.login` for
-    installation_target.renamed) and falling back to
-    `repository.owner.login` for workflow_job payloads.
+    All fields are passed explicitly by the caller (each branch of
+    `webhook()` knows the exact payload shape for its event type and does
+    its own extraction). The helper just normalises `source="webhook"` and
+    handles the exception logging.
     """
-    install = payload.get("installation") or {}
-    account = install.get("account") or payload.get("account") or {}
-    repo_owner = (payload.get("repository") or {}).get("owner") or {}
-    fields = dict(
-        installation_id=install.get("id"),
-        app_id=install.get("app_id") or hook_target_id,
-        entity_type=install.get("target_type") or account.get("type") or repo_owner.get("type"),
-        entity_id=install.get("target_id") or account.get("id") or repo_owner.get("id"),
-        entity_name=account.get("login") or repo_owner.get("login"),
-    )
-    fields.update(overrides)
     try:
         db.add_installation_event(
             source="webhook",
             event=event,
             outcome=outcome,
             payload=payload,
-            **fields,
+            app_id=app_id,
+            installation_id=installation_id,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            entity_name=entity_name,
         )
     except Exception:
         # Bubble up so the caller's transaction view is honest, but make sure
@@ -304,16 +295,15 @@ def _check_trace_auth():
         raise WebhookError(401, "Unauthorized")
 
 
-def _trace_response(events):
-    return make_response(json.dumps({"events": events}, default=str), 200,
-                         {"Content-Type": "application/json"})
+def _json_response(data):
+    return make_response(json_dumps(data, default=str), 200, {"Content-Type": "application/json"})
 
 
 @app.route("/trace/entity/<int:entity_id>", methods=["GET"])
 def trace_entity(entity_id):
     _check_trace_auth()
     events = db.get_events_by_entity_id(entity_id)
-    return _trace_response(events)
+    return _json_response({"events": events})
 
 
 @app.route("/trace/installation/<int:installation_id>", methods=["GET"])
@@ -321,9 +311,9 @@ def trace_installation(installation_id):
     _check_trace_auth()
     entity_id = db.get_entity_id_for_installation(installation_id)
     if entity_id is None:
-        return _trace_response([])
+        raise WebhookError(404, "Entity not found")
     events = db.get_events_by_entity_id(entity_id)
-    return _trace_response(events)
+    return _json_response({"events": events})
 
 
 @app.route("/trace/job/<int:job_id>", methods=["GET"])
@@ -331,9 +321,9 @@ def trace_job(job_id):
     _check_trace_auth()
     entity_id = db.get_entity_id_for_job(job_id)
     if entity_id is None:
-        return _trace_response([])
+        raise WebhookError(404, "Entity not found")
     events = db.get_events_by_entity_id(entity_id)
-    return _trace_response(events)
+    return _json_response({"events": events})
 
 
 @app.route("/trace/payload/<int:event_id>", methods=["GET"])
@@ -341,20 +331,8 @@ def trace_payload(event_id):
     _check_trace_auth()
     payload = db.get_payload_by_id(event_id)
     if payload is None:
-        return make_response(json.dumps({"error": "not found"}), 404,
-                             {"Content-Type": "application/json"})
-    return make_response(json.dumps({"payload": payload}, default=str), 200,
-                         {"Content-Type": "application/json"})
-
-
-def _parse_hook_target_id(headers) -> int | None:
-    raw = headers.get("X-GitHub-Hook-Installation-Target-Id")
-    if not raw:
-        return None
-    try:
-        return int(raw)
-    except ValueError:
-        return None
+        raise WebhookError(404, "Payload not found")
+    return _json_response({"payload": payload})
 
 
 @app.route("/", methods=['POST'])
@@ -367,35 +345,87 @@ def webhook():
         logger.debug("Invalid JSON payload")
         raise WebhookError(400, "Invalid JSON payload")
 
-    hook_target_id = _parse_hook_target_id(request.headers)
-    log_ctx = {"hook_target_id": hook_target_id, "payload": payload}
+    if not "X-GitHub-Hook-Installation-Target-Id" in request.headers:
+        raise WebhookError(400, "Missing X-GitHub-Hook-Installation-Target-Id header")
+    try:
+        app_id = int(request.headers["X-GitHub-Hook-Installation-Target-Id"])
+    except ValueError:
+        raise WebhookError(400, "Invalid X-GitHub-Hook-Installation-Target-Id header")
 
     if event == "ping":
-        _log_webhook_event(event="ping", outcome="ok", **log_ctx)
+        _log_webhook_event(event="ping", outcome="ok", payload=payload, app_id=app_id)
         return f"pong"
 
     elif event == "installation":
         action = payload["action"]
-        _log_webhook_event(event=f"installation.{action}", outcome="ok", **log_ctx)
+        install = payload["installation"]
+        account = install.get("account") or {}
+        _log_webhook_event(
+            event=f"installation.{action}",
+            outcome="ok",
+            payload=payload,
+            app_id=app_id,
+            installation_id=install.get("id"),
+            entity_type=install.get("target_type") or account.get("type"),
+            entity_id=install.get("target_id") or account.get("id"),
+            entity_name=account.get("login"),
+        )
         return f"installation.{action} logged"
 
     elif event == "installation_repositories":
         action = payload["action"]
-        _log_webhook_event(event=f"installation_repositories.{action}", outcome="ok", **log_ctx)
+        install = payload["installation"]
+        account = install.get("account") or {}
+        _log_webhook_event(
+            event=f"installation_repositories.{action}",
+            outcome="ok",
+            payload=payload,
+            app_id=app_id,
+            installation_id=install.get("id"),
+            entity_type=install.get("target_type") or account.get("type"),
+            entity_id=install.get("target_id") or account.get("id"),
+            entity_name=account.get("login"),
+        )
         return f"installation_repositories.{action} logged"
 
     elif event == "installation_target":
         action = payload["action"]
-        _log_webhook_event(event=f"installation_target.{action}", outcome="ok", **log_ctx)
+        # `installation_target.renamed` carries the new account at top level;
+        # `installation.account` would be the pre-rename name, which is the wrong one.
+        account = payload.get("account") or {}
+        install = payload.get("installation") or {}
+        _log_webhook_event(
+            event=f"installation_target.{action}",
+            outcome="ok",
+            payload=payload,
+            app_id=app_id,
+            installation_id=install.get("id"),
+            entity_type=payload.get("target_type") or account.get("type"),
+            entity_id=account.get("id") or install.get("target_id"),
+            entity_name=account.get("login"),
+        )
         return f"installation_target.{action} logged"
 
     elif event == "workflow_job":
         action = payload["action"]
         wj_event = f"workflow_job.{action}"
 
+        # workflow_job's `installation` object is just `{id, node_id}` — no
+        # account info. Pull the entity from `repository.owner` instead.
+        wj_install = payload.get("installation") or {}
+        wj_owner = (payload.get("repository") or {}).get("owner") or {}
+        wj_log = dict(
+            payload=payload,
+            app_id=app_id,
+            installation_id=wj_install.get("id"),
+            entity_type=wj_owner.get("type"),
+            entity_id=wj_owner.get("id"),
+            entity_name=wj_owner.get("login"),
+        )
+
         # Ignore workflow_job actions we don't process (e.g. 'waiting').
         if action not in ("queued", "in_progress", "completed"):
-            _log_webhook_event(event=wj_event, outcome="ignored_action", **log_ctx)
+            _log_webhook_event(event=wj_event, outcome="ignored_action", **wj_log)
             logger.debug("Ignoring action: %s", action)
             return f"Ignoring action: {action}"
 
@@ -433,6 +463,8 @@ def webhook():
 
         # entity_id: owner_id (org) for organizations, repo_id for personal accounts
         entity_id = owner_id if entity_type == EntityType.ORGANIZATION else repo_id
+        # The log row records the same `entity_id` `add_job` would store.
+        wj_log["entity_id"] = entity_id
 
         # Make sure the required labels are present; Filters out unsupported jobs early.
         # If labels don't match, log + return — the WebhookError gets caught here so we
@@ -440,7 +472,7 @@ def webhook():
         try:
             k8s_pool, k8s_image = match_labels_to_k8s(owner_id, repo_full_name, job_labels)
         except WebhookError as e:
-            _log_webhook_event(event=wj_event, outcome="ignored_no_label", **log_ctx)
+            _log_webhook_event(event=wj_event, outcome="ignored_no_label", **wj_log)
             raise
 
         logger.info("Received %s workflow_job id=%s name=%s repo=%s labels=%s entity_type=%s",
@@ -480,7 +512,7 @@ def webhook():
             )
 
             outcome = "job_stored" if stored else "job_already_exists"
-            _log_webhook_event(event=wj_event, outcome=outcome, **log_ctx)
+            _log_webhook_event(event=wj_event, outcome=outcome, **wj_log)
 
             if stored:
                 return f"Job {job_id} stored."
@@ -490,7 +522,7 @@ def webhook():
         elif action == "in_progress":
             prev_status = db.mark_job_running(job_id, payload["workflow_job"].get("runner_name"))
             outcome = "job_not_found" if prev_status is None else "job_marked_running"
-            _log_webhook_event(event=wj_event, outcome=outcome, **log_ctx)
+            _log_webhook_event(event=wj_event, outcome=outcome, **wj_log)
             if prev_status is None:
                 logger.warning("Job %s not found on in_progress event", job_id)
                 return f"Job {job_id} not found."
@@ -500,14 +532,14 @@ def webhook():
         elif action == "completed":
             prev_status = db.mark_job_completed(job_id, payload["workflow_job"].get("runner_name"))
             outcome = "job_not_found" if prev_status is None else "job_marked_completed"
-            _log_webhook_event(event=wj_event, outcome=outcome, **log_ctx)
+            _log_webhook_event(event=wj_event, outcome=outcome, **wj_log)
             if prev_status is None:
                 logger.warning("Job %s not found on completed event", job_id)
                 return f"Job {job_id} not found."
             return f"Job {job_id} completed (was {prev_status})."
 
     else:
-        _log_webhook_event(event=event, outcome="ignored_event", **log_ctx)
+        _log_webhook_event(event=event, outcome="ignored_event", payload=payload, app_id=app_id)
         return f"Ignoring {event} event"
 
 if __name__ == "__main__":

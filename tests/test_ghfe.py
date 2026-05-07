@@ -122,6 +122,7 @@ def test_webhook_queued_stores_job(mock_store):
         resp = client.post("/", data=body, headers={
             "X-Hub-Signature-256": sig,
             "X-Github-Event": "workflow_job",
+            "X-GitHub-Hook-Installation-Target-Id": "2167633",
             "Content-Type": "application/json",
         })
         assert resp.status_code == 200
@@ -159,6 +160,7 @@ def test_webhook_queued_personal_account(mock_store):
         resp = client.post("/", data=body, headers={
             "X-Hub-Signature-256": sig,
             "X-Github-Event": "workflow_job",
+            "X-GitHub-Hook-Installation-Target-Id": "2167633",
             "Content-Type": "application/json",
         })
         assert resp.status_code == 200
@@ -195,6 +197,7 @@ def test_webhook_in_progress(mock_update):
         resp = client.post("/", data=body, headers={
             "X-Hub-Signature-256": sig,
             "X-Github-Event": "workflow_job",
+            "X-GitHub-Hook-Installation-Target-Id": "2167633",
             "Content-Type": "application/json",
         })
         assert resp.status_code == 200
@@ -219,6 +222,7 @@ def test_webhook_completed(mock_complete):
         resp = client.post("/", data=body, headers={
             "X-Hub-Signature-256": sig,
             "X-Github-Event": "workflow_job",
+            "X-GitHub-Hook-Installation-Target-Id": "2167633",
             "Content-Type": "application/json",
         })
         assert resp.status_code == 200
@@ -406,14 +410,17 @@ def test_webhook_installation_repositories_added_logs(_mock_add_installation_eve
 
 
 def test_webhook_installation_target_renamed_logs(_mock_add_installation_event):
+    """installation_target.renamed payload carries the new account at top
+    level; we record the new login (not the cached one in installation.account)."""
     from ghfe import app
     payload = {
         "action": "renamed",
-        "installation": {"id": 999, "app_id": 2167633,
-                         "target_id": 152654596, "target_type": "Organization",
-                         "account": {"id": 152654596, "login": "renamed-org",
-                                     "type": "Organization"}},
+        # Top-level account = new state. installation.account would be stale.
+        "account": {"id": 152654596, "login": "renamed-org", "type": "Organization"},
         "changes": {"login": {"from": "riseproject-dev"}},
+        "target_type": "Organization",
+        "installation": {"id": 999, "app_id": 2167633, "target_id": 152654596,
+                         "target_type": "Organization"},
     }
     body = json.dumps(payload)
     with app.test_client() as client:
@@ -422,6 +429,7 @@ def test_webhook_installation_target_renamed_logs(_mock_add_installation_event):
     kwargs = _last_log_call(_mock_add_installation_event)
     assert kwargs["event"] == "installation_target.renamed"
     assert kwargs["entity_name"] == "renamed-org"
+    assert kwargs["entity_id"] == 152654596
 
 
 def test_webhook_unhandled_event_logs_ignored_event(_mock_add_installation_event):
@@ -564,10 +572,10 @@ def test_webhook_workflow_job_no_label_logs_ignored_no_label(_mock_add_installat
 
 
 @patch("db.add_job", return_value=True)
-def test_webhook_app_id_falls_back_to_hook_target_id(mock_add_job, _mock_add_installation_event):
-    """workflow_job payloads carry a stub installation {id, node_id} without
-    app_id. The header X-GitHub-Hook-Installation-Target-Id must populate
-    add_installation_event(app_id=...)."""
+def test_webhook_app_id_comes_from_hook_target_id_header(mock_add_job, _mock_add_installation_event):
+    """`app_id` is always taken from X-GitHub-Hook-Installation-Target-Id —
+    this is the canonical signal of which app delivered the event, and is
+    set by GitHub on every App webhook."""
     from ghfe import app
     payload = {
         "action": "queued",
@@ -648,21 +656,21 @@ def test_trace_installation_translates_to_entity(mock_get_eid, mock_get_events, 
 
 
 @patch("db.get_entity_id_for_installation", return_value=None)
-def test_trace_installation_unknown_returns_empty(mock_get_eid, _mock_add_installation_event):
+def test_trace_installation_unknown_returns_404(mock_get_eid, _mock_add_installation_event):
     from ghfe import app
     with app.test_client() as client:
         resp = _trace_get(client, "/trace/installation/999")
-        assert resp.status_code == 200
-        assert json.loads(resp.data) == {"events": []}
+        assert resp.status_code == 404
+        assert b"Entity not found" in resp.data
 
 
 @patch("db.get_entity_id_for_job", return_value=None)
-def test_trace_job_unknown_returns_empty(mock_get_eid, _mock_add_installation_event):
+def test_trace_job_unknown_returns_404(mock_get_eid, _mock_add_installation_event):
     from ghfe import app
     with app.test_client() as client:
         resp = _trace_get(client, "/trace/job/12345")
-        assert resp.status_code == 200
-        assert json.loads(resp.data) == {"events": []}
+        assert resp.status_code == 404
+        assert b"Entity not found" in resp.data
 
 
 @patch("db.get_events_by_entity_id", return_value=[{"id": 1}])
@@ -695,3 +703,35 @@ def test_trace_payload_not_found(mock_get_payload, _mock_add_installation_event)
     with app.test_client() as client:
         resp = _trace_get(client, "/trace/payload/42")
         assert resp.status_code == 404
+        assert b"Payload not found" in resp.data
+
+
+def test_webhook_missing_hook_target_id_returns_400(_mock_add_installation_event):
+    """X-GitHub-Hook-Installation-Target-Id is the canonical app_id signal;
+    if it's missing we reject the request with 400 rather than guessing."""
+    from ghfe import app
+    body = json.dumps({"zen": "ok"})
+    sig = "sha256=" + compute_signature(body, GHAPP_WEBHOOK_SECRET).hexdigest()
+    with app.test_client() as client:
+        # Header omitted on purpose
+        resp = client.post("/", data=body, headers={
+            "X-Hub-Signature-256": sig,
+            "X-Github-Event": "ping",
+            "Content-Type": "application/json",
+        })
+        assert resp.status_code == 400
+        assert b"X-GitHub-Hook-Installation-Target-Id" in resp.data
+
+
+def test_webhook_invalid_hook_target_id_returns_400(_mock_add_installation_event):
+    from ghfe import app
+    body = json.dumps({"zen": "ok"})
+    sig = "sha256=" + compute_signature(body, GHAPP_WEBHOOK_SECRET).hexdigest()
+    with app.test_client() as client:
+        resp = client.post("/", data=body, headers={
+            "X-Hub-Signature-256": sig,
+            "X-Github-Event": "ping",
+            "X-GitHub-Hook-Installation-Target-Id": "not-an-int",
+            "Content-Type": "application/json",
+        })
+        assert resp.status_code == 400
