@@ -102,20 +102,40 @@ def check_webhook_signature(headers, body):
     return event, body
 
 
-def check_webhook_event(body):
-    """Check if the event is a workflow_job with a handled action."""
+def _log_webhook_event(*, delivery_id, hook_target_id, event, payload,
+                       outcome, **overrides):
+    """Insert one installation_events row for a webhook delivery.
+
+    `event` and `payload` are caller-built. The helper extracts
+    installation/account fields from `payload` and falls back to
+    `hook_target_id` (X-GitHub-Hook-Installation-Target-Id, the delivering
+    app's id) when `payload.installation.app_id` is absent — needed for
+    workflow_job deliveries whose installation object is just a stub.
+    """
+    install = payload.get("installation") or {}
+    account = install.get("account") or payload.get("account") or {}
+    fields = dict(
+        installation_id=install.get("id"),
+        app_id=install.get("app_id") or hook_target_id,
+        entity_type=install.get("target_type") or account.get("type"),
+        entity_id=install.get("target_id") or account.get("id"),
+        account_login=account.get("login"),
+    )
+    fields.update(overrides)
     try:
-        payload = json.loads(body)
-    except json.JSONDecodeError:
-        logger.debug("Invalid JSON payload")
-        raise WebhookError(400, "Invalid JSON payload")
-
-    action = payload["action"]
-    if action not in ("queued", "in_progress", "completed"):
-        logger.debug("Ignoring action: %s", action)
-        raise WebhookError(200, f"Ignoring action: {action}")
-
-    return payload, action
+        db.add_installation_event(
+            source="webhook",
+            event=event,
+            outcome=outcome,
+            delivery_id=delivery_id,
+            payload=payload,
+            **fields,
+        )
+    except Exception:
+        # Bubble up so the caller's transaction view is honest, but make sure
+        # the response logs the original event/outcome for debugging.
+        logger.exception("Failed to record installation_events row event=%s outcome=%s", event, outcome)
+        raise
 
 
 def authorize_entity(payload):
@@ -272,15 +292,110 @@ def setup_personal():
     return _render_setup(expected=EntityType.USER)
 
 
+# --- /trace endpoints ---
+
+def _check_trace_auth():
+    """401 unless the Bearer token matches TRACE_API_TOKEN. Plain equality check."""
+    auth = request.headers.get("Authorization", "")
+    if auth != f"Bearer {TRACE_API_TOKEN}":
+        raise WebhookError(401, "Unauthorized")
+
+
+def _trace_response(events):
+    return make_response(json.dumps({"events": events}, default=str), 200,
+                         {"Content-Type": "application/json"})
+
+
+@app.route("/trace/entity/<int:entity_id>", methods=["GET"])
+def trace_entity(entity_id):
+    _check_trace_auth()
+    events = db.get_events_by_entity_id(entity_id)
+    return _trace_response(events)
+
+
+@app.route("/trace/installation/<int:installation_id>", methods=["GET"])
+def trace_installation(installation_id):
+    _check_trace_auth()
+    entity_id = db.get_entity_id_for_installation(installation_id)
+    if entity_id is None:
+        return _trace_response([])
+    events = db.get_events_by_entity_id(entity_id)
+    return _trace_response(events)
+
+
+@app.route("/trace/job/<int:job_id>", methods=["GET"])
+def trace_job(job_id):
+    _check_trace_auth()
+    entity_id = db.get_entity_id_for_job(job_id)
+    if entity_id is None:
+        return _trace_response([])
+    events = db.get_events_by_entity_id(entity_id)
+    return _trace_response(events)
+
+
+@app.route("/trace/payload/<int:event_id>", methods=["GET"])
+def trace_payload(event_id):
+    _check_trace_auth()
+    payload = db.get_payload_by_id(event_id)
+    if payload is None:
+        return make_response(json.dumps({"error": "not found"}), 404,
+                             {"Content-Type": "application/json"})
+    return make_response(json.dumps({"payload": payload}, default=str), 200,
+                         {"Content-Type": "application/json"})
+
+
+def _parse_hook_target_id(headers) -> int | None:
+    raw = headers.get("X-GitHub-Hook-Installation-Target-Id")
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
 @app.route("/", methods=['POST'])
 def webhook():
     event, body = check_webhook_signature(request.headers, request.get_data(as_text=True))
 
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        logger.debug("Invalid JSON payload")
+        raise WebhookError(400, "Invalid JSON payload")
+
+    delivery_id = request.headers.get("X-GitHub-Delivery")
+    hook_target_id = _parse_hook_target_id(request.headers)
+    log_ctx = {"delivery_id": delivery_id, "hook_target_id": hook_target_id, "payload": payload}
+
     if event == "ping":
+        _log_webhook_event(event="ping", outcome="ok", **log_ctx)
         return f"pong"
 
+    elif event == "installation":
+        action = payload["action"]
+        _log_webhook_event(event=f"installation.{action}", outcome="ok", **log_ctx)
+        return f"installation.{action} logged"
+
+    elif event == "installation_repositories":
+        action = payload["action"]
+        _log_webhook_event(event=f"installation_repositories.{action}", outcome="ok", **log_ctx)
+        return f"installation_repositories.{action} logged"
+
+    elif event == "installation_target":
+        action = payload["action"]
+        _log_webhook_event(event=f"installation_target.{action}", outcome="ok", **log_ctx)
+        return f"installation_target.{action} logged"
+
     elif event == "workflow_job":
-        payload, action = check_webhook_event(body)
+        action = payload["action"]
+        wj_event = f"workflow_job.{action}"
+
+        # Ignore workflow_job actions we don't process (e.g. 'waiting').
+        if action not in ("queued", "in_progress", "completed"):
+            _log_webhook_event(event=wj_event, outcome="ignored_action", **log_ctx)
+            logger.debug("Ignoring action: %s", action)
+            return f"Ignoring action: {action}"
 
         owner_id, entity_type = authorize_entity(payload)
 
@@ -317,8 +432,14 @@ def webhook():
         # entity_id: owner_id (org) for organizations, repo_id for personal accounts
         entity_id = owner_id if entity_type == EntityType.ORGANIZATION else repo_id
 
-        # Make sure the required labels are present; Filters out unsupported jobs early
-        k8s_pool, k8s_image = match_labels_to_k8s(owner_id, repo_full_name, job_labels)
+        # Make sure the required labels are present; Filters out unsupported jobs early.
+        # If labels don't match, log + return — the WebhookError gets caught here so we
+        # can still record an `ignored_no_label` row before propagating the response.
+        try:
+            k8s_pool, k8s_image = match_labels_to_k8s(owner_id, repo_full_name, job_labels)
+        except WebhookError as e:
+            _log_webhook_event(event=wj_event, outcome="ignored_no_label", **log_ctx)
+            raise
 
         logger.info("Received %s workflow_job id=%s name=%s repo=%s labels=%s entity_type=%s",
                     action, job_id, payload["workflow_job"]["name"],
@@ -356,6 +477,9 @@ def webhook():
                 html_url=html_url,
             )
 
+            outcome = "job_stored" if stored else "job_already_exists"
+            _log_webhook_event(event=wj_event, outcome=outcome, **log_ctx)
+
             if stored:
                 return f"Job {job_id} stored."
             else:
@@ -363,6 +487,8 @@ def webhook():
 
         elif action == "in_progress":
             prev_status = db.mark_job_running(job_id, payload["workflow_job"].get("runner_name"))
+            outcome = "job_not_found" if prev_status is None else "job_marked_running"
+            _log_webhook_event(event=wj_event, outcome=outcome, **log_ctx)
             if prev_status is None:
                 logger.warning("Job %s not found on in_progress event", job_id)
                 return f"Job {job_id} not found."
@@ -371,15 +497,15 @@ def webhook():
 
         elif action == "completed":
             prev_status = db.mark_job_completed(job_id, payload["workflow_job"].get("runner_name"))
+            outcome = "job_not_found" if prev_status is None else "job_marked_completed"
+            _log_webhook_event(event=wj_event, outcome=outcome, **log_ctx)
             if prev_status is None:
                 logger.warning("Job %s not found on completed event", job_id)
                 return f"Job {job_id} not found."
             return f"Job {job_id} completed (was {prev_status})."
 
-        else:
-            return f"Ignoring {action} job"
-
     else:
+        _log_webhook_event(event=event, outcome="ignored_event", **log_ctx)
         return f"Ignoring {event} event"
 
 if __name__ == "__main__":

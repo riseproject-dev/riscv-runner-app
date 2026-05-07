@@ -16,6 +16,7 @@ GHAPP_ORG_PRIVATE_KEY = os.environ["GHAPP_ORG_PRIVATE_KEY"]  # PEM-encoded priva
 GHAPP_PERSONAL_ID = 3131217  # https://github.com/apps/rise-risc-v-runners-personal
 GHAPP_PERSONAL_PRIVATE_KEY = os.environ["GHAPP_PERSONAL_PRIVATE_KEY"]  # PEM-encoded private key for the personal GitHub App
 GHAPP_WEBHOOK_SECRET = os.environ["GHAPP_WEBHOOK_SECRET"]  # Secret for validating GitHub webhook signatures
+TRACE_API_TOKEN = os.environ["TRACE_API_TOKEN"]  # Bearer token gating /trace/* endpoints
 
 POSTGRES_URL = os.environ["POSTGRES_URL"]  # postgresql://user:pass@host:5432/db?sslmode=require
 POSTGRES_SCHEMA = "prod" if PROD else "staging"

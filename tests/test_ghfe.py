@@ -6,12 +6,23 @@ from constants import EntityType
 from ghfe import (
     WebhookError,
     check_webhook_signature,
-    check_webhook_event,
     authorize_entity,
     compute_signature,
     match_labels_to_k8s,
     GHAPP_WEBHOOK_SECRET,
+    TRACE_API_TOKEN,
 )
+
+
+@pytest.fixture(autouse=True)
+def _mock_add_installation_event():
+    """Stub the event log writer so webhook tests don't try to hit Postgres.
+
+    Returns a fresh MagicMock per test; tests that care about the call args
+    can grab it via the request fixture if needed.
+    """
+    with patch("ghfe.db.add_installation_event", return_value=1) as m:
+        yield m
 
 
 # --- Signature verification ---
@@ -44,40 +55,6 @@ def test_missing_signature():
         with pytest.raises(WebhookError) as exc:
             check_webhook_signature(headers, "")
         assert exc.value.status_code == 400
-
-
-# --- Event parsing ---
-
-def test_queued_event():
-    body = json.dumps({"action": "queued", "workflow_job": {"id": 1, "name": "test", "labels": ["ubuntu-24.04-riscv"]}, "repository": {"full_name": "org/repo"}})
-    payload, action = check_webhook_event(body)
-    assert action == "queued"
-
-
-def test_completed_event():
-    body = json.dumps({"action": "completed", "workflow_job": {"id": 123, "name": "test", "labels": ["ubuntu-24.04-riscv"]}, "repository": {"full_name": "org/repo"}})
-    payload, action = check_webhook_event(body)
-    assert action == "completed"
-
-
-def test_in_progress_event():
-    body = json.dumps({"action": "in_progress", "workflow_job": {"id": 123, "name": "test", "labels": ["ubuntu-24.04-riscv"]}, "repository": {"full_name": "org/repo"}})
-    payload, action = check_webhook_event(body)
-    assert action == "in_progress"
-
-
-def test_ignored_event():
-    body = '{"action":"waiting"}'
-    with pytest.raises(WebhookError) as exc:
-        check_webhook_event(body)
-    assert exc.value.status_code == 200
-    assert "Ignoring action" in exc.value.message
-
-
-def test_invalid_json():
-    with pytest.raises(WebhookError) as exc:
-        check_webhook_event("{")
-    assert exc.value.status_code == 400
 
 
 # --- Owner authorization ---
@@ -330,3 +307,392 @@ def test_setup_upstream_error(mock_get_installation):
         resp = client.get("/setup/org?installation_id=123")
         assert resp.status_code == 502
         assert b"Something went wrong" in resp.data
+
+
+# --- Installation event logging on the webhook handler ---
+
+DELIVERY_HEADERS = {
+    "X-GitHub-Delivery": "11111111-2222-3333-4444-555555555555",
+    "X-GitHub-Hook-Installation-Target-Id": "2167633",
+}
+
+
+def _post_webhook(client, body, event):
+    sig = "sha256=" + compute_signature(body, GHAPP_WEBHOOK_SECRET).hexdigest()
+    headers = {
+        "X-Hub-Signature-256": sig,
+        "X-Github-Event": event,
+        "Content-Type": "application/json",
+        **DELIVERY_HEADERS,
+    }
+    return client.post("/", data=body, headers=headers)
+
+
+def _last_log_call(mock):
+    """Return the kwargs of the last call to db.add_installation_event."""
+    assert mock.call_count >= 1, "expected db.add_installation_event to be called"
+    return mock.call_args.kwargs
+
+
+def test_webhook_invalid_json_returns_400(_mock_add_installation_event):
+    from ghfe import app
+    body = "{not-json"
+    sig = "sha256=" + compute_signature(body, GHAPP_WEBHOOK_SECRET).hexdigest()
+    with app.test_client() as client:
+        resp = client.post("/", data=body, headers={
+            "X-Hub-Signature-256": sig,
+            "X-Github-Event": "installation",
+            "Content-Type": "application/json",
+        })
+        assert resp.status_code == 400
+
+
+def test_webhook_ping_logs_ok(_mock_add_installation_event):
+    from ghfe import app
+    body = json.dumps({"zen": "Approachable is better than simple."})
+    with app.test_client() as client:
+        resp = _post_webhook(client, body, "ping")
+        assert resp.status_code == 200
+        assert resp.data == b"pong"
+    kwargs = _last_log_call(_mock_add_installation_event)
+    assert kwargs["event"] == "ping"
+    assert kwargs["outcome"] == "ok"
+    assert kwargs["source"] == "webhook"
+
+
+def test_webhook_installation_created_logs(_mock_add_installation_event):
+    from ghfe import app
+    payload = {
+        "action": "created",
+        "installation": {
+            "id": 999,
+            "app_id": 2167633,
+            "target_id": 152654596,
+            "target_type": "Organization",
+            "account": {"id": 152654596, "login": "riseproject-dev", "type": "Organization"},
+        },
+        "repositories": [{"id": 1, "full_name": "riseproject-dev/sample"}],
+    }
+    body = json.dumps(payload)
+    with app.test_client() as client:
+        resp = _post_webhook(client, body, "installation")
+        assert resp.status_code == 200
+
+    kwargs = _last_log_call(_mock_add_installation_event)
+    assert kwargs["event"] == "installation.created"
+    assert kwargs["outcome"] == "ok"
+    assert kwargs["installation_id"] == 999
+    assert kwargs["app_id"] == 2167633
+    assert kwargs["entity_id"] == 152654596
+    assert kwargs["account_login"] == "riseproject-dev"
+
+
+def test_webhook_installation_repositories_added_logs(_mock_add_installation_event):
+    from ghfe import app
+    payload = {
+        "action": "added",
+        "installation": {"id": 999, "app_id": 2167633,
+                         "target_id": 152654596, "target_type": "Organization",
+                         "account": {"id": 152654596, "login": "riseproject-dev",
+                                     "type": "Organization"}},
+        "repositories_added": [{"id": 2, "full_name": "riseproject-dev/new-repo"}],
+        "repositories_removed": [],
+    }
+    body = json.dumps(payload)
+    with app.test_client() as client:
+        resp = _post_webhook(client, body, "installation_repositories")
+        assert resp.status_code == 200
+    kwargs = _last_log_call(_mock_add_installation_event)
+    assert kwargs["event"] == "installation_repositories.added"
+
+
+def test_webhook_installation_target_renamed_logs(_mock_add_installation_event):
+    from ghfe import app
+    payload = {
+        "action": "renamed",
+        "installation": {"id": 999, "app_id": 2167633,
+                         "target_id": 152654596, "target_type": "Organization",
+                         "account": {"id": 152654596, "login": "renamed-org",
+                                     "type": "Organization"}},
+        "changes": {"login": {"from": "riseproject-dev"}},
+    }
+    body = json.dumps(payload)
+    with app.test_client() as client:
+        resp = _post_webhook(client, body, "installation_target")
+        assert resp.status_code == 200
+    kwargs = _last_log_call(_mock_add_installation_event)
+    assert kwargs["event"] == "installation_target.renamed"
+    assert kwargs["account_login"] == "renamed-org"
+
+
+def test_webhook_unhandled_event_logs_ignored_event(_mock_add_installation_event):
+    from ghfe import app
+    body = json.dumps({"ref": "refs/heads/main"})
+    with app.test_client() as client:
+        resp = _post_webhook(client, body, "push")
+        assert resp.status_code == 200
+        assert b"Ignoring push event" in resp.data
+    kwargs = _last_log_call(_mock_add_installation_event)
+    assert kwargs["event"] == "push"
+    assert kwargs["outcome"] == "ignored_event"
+
+
+@patch("db.add_job", return_value=True)
+def test_webhook_workflow_job_queued_logs_job_stored(mock_add_job, _mock_add_installation_event):
+    from ghfe import app
+    payload = {
+        "action": "queued",
+        "workflow_job": {"id": 12345, "name": "test", "labels": ["ubuntu-24.04-riscv"],
+                         "html_url": "https://github.com/o/r/actions/runs/1/job/12345"},
+        "repository": {"id": 100, "full_name": "riseproject-dev/sample",
+                       "owner": {"id": 152654596, "login": "riseproject-dev",
+                                 "type": "Organization"}},
+        "installation": {"id": 999},
+    }
+    body = json.dumps(payload)
+    with app.test_client() as client:
+        resp = _post_webhook(client, body, "workflow_job")
+        assert resp.status_code == 200
+    kwargs = _last_log_call(_mock_add_installation_event)
+    assert kwargs["event"] == "workflow_job.queued"
+    assert kwargs["outcome"] == "job_stored"
+
+
+@patch("db.add_job", return_value=False)
+def test_webhook_workflow_job_queued_already_exists(mock_add_job, _mock_add_installation_event):
+    from ghfe import app
+    payload = {
+        "action": "queued",
+        "workflow_job": {"id": 12345, "name": "test", "labels": ["ubuntu-24.04-riscv"],
+                         "html_url": "https://github.com/o/r/actions/runs/1/job/12345"},
+        "repository": {"id": 100, "full_name": "riseproject-dev/sample",
+                       "owner": {"id": 152654596, "login": "riseproject-dev",
+                                 "type": "Organization"}},
+        "installation": {"id": 999},
+    }
+    body = json.dumps(payload)
+    with app.test_client() as client:
+        resp = _post_webhook(client, body, "workflow_job")
+        assert resp.status_code == 200
+    kwargs = _last_log_call(_mock_add_installation_event)
+    assert kwargs["outcome"] == "job_already_exists"
+
+
+@patch("db.mark_job_running", return_value="pending")
+def test_webhook_workflow_job_in_progress_logs_marked_running(mock_mr, _mock_add_installation_event):
+    from ghfe import app
+    payload = {
+        "action": "in_progress",
+        "workflow_job": {"id": 12345, "name": "test", "labels": ["ubuntu-24.04-riscv"], "runner_name": "rn"},
+        "repository": {"id": 100, "full_name": "o/r",
+                       "owner": {"id": 152654596, "login": "o", "type": "Organization"}},
+    }
+    body = json.dumps(payload)
+    with app.test_client() as client:
+        resp = _post_webhook(client, body, "workflow_job")
+        assert resp.status_code == 200
+    kwargs = _last_log_call(_mock_add_installation_event)
+    assert kwargs["event"] == "workflow_job.in_progress"
+    assert kwargs["outcome"] == "job_marked_running"
+
+
+@patch("db.mark_job_running", return_value=None)
+def test_webhook_workflow_job_in_progress_not_found(mock_mr, _mock_add_installation_event):
+    from ghfe import app
+    payload = {
+        "action": "in_progress",
+        "workflow_job": {"id": 12345, "name": "test", "labels": ["ubuntu-24.04-riscv"]},
+        "repository": {"id": 100, "full_name": "o/r",
+                       "owner": {"id": 152654596, "login": "o", "type": "Organization"}},
+    }
+    body = json.dumps(payload)
+    with app.test_client() as client:
+        resp = _post_webhook(client, body, "workflow_job")
+        assert resp.status_code == 200
+    kwargs = _last_log_call(_mock_add_installation_event)
+    assert kwargs["outcome"] == "job_not_found"
+
+
+@patch("db.mark_job_completed", return_value="running")
+def test_webhook_workflow_job_completed_logs_marked_completed(mock_mc, _mock_add_installation_event):
+    from ghfe import app
+    payload = {
+        "action": "completed",
+        "workflow_job": {"id": 12345, "name": "test", "labels": ["ubuntu-24.04-riscv"]},
+        "repository": {"id": 100, "full_name": "o/r",
+                       "owner": {"id": 152654596, "login": "o", "type": "Organization"}},
+    }
+    body = json.dumps(payload)
+    with app.test_client() as client:
+        resp = _post_webhook(client, body, "workflow_job")
+        assert resp.status_code == 200
+    kwargs = _last_log_call(_mock_add_installation_event)
+    assert kwargs["event"] == "workflow_job.completed"
+    assert kwargs["outcome"] == "job_marked_completed"
+
+
+def test_webhook_workflow_job_unknown_action_logs_ignored_action(_mock_add_installation_event):
+    """Verifies the action-whitelist removal from check_webhook_event: unknown
+    workflow_job actions like 'waiting' now reach the workflow_job branch and
+    log outcome='ignored_action' instead of being rejected wholesale."""
+    from ghfe import app
+    body = json.dumps({"action": "waiting", "workflow_job": {}, "repository": {}})
+    with app.test_client() as client:
+        resp = _post_webhook(client, body, "workflow_job")
+        assert resp.status_code == 200
+    kwargs = _last_log_call(_mock_add_installation_event)
+    assert kwargs["event"] == "workflow_job.waiting"
+    assert kwargs["outcome"] == "ignored_action"
+
+
+def test_webhook_workflow_job_no_label_logs_ignored_no_label(_mock_add_installation_event):
+    from ghfe import app
+    payload = {
+        "action": "queued",
+        "workflow_job": {"id": 12345, "name": "test", "labels": ["unsupported-label"]},
+        "repository": {"id": 100, "full_name": "o/r",
+                       "owner": {"id": 152654596, "login": "o", "type": "Organization"}},
+        "installation": {"id": 999},
+    }
+    body = json.dumps(payload)
+    with app.test_client() as client:
+        resp = _post_webhook(client, body, "workflow_job")
+        assert resp.status_code == 200
+        assert b"missing required platform label" in resp.data
+    kwargs = _last_log_call(_mock_add_installation_event)
+    assert kwargs["event"] == "workflow_job.queued"
+    assert kwargs["outcome"] == "ignored_no_label"
+
+
+@patch("db.add_job", return_value=True)
+def test_webhook_app_id_falls_back_to_hook_target_id(mock_add_job, _mock_add_installation_event):
+    """workflow_job payloads carry a stub installation {id, node_id} without
+    app_id. The header X-GitHub-Hook-Installation-Target-Id must populate
+    add_installation_event(app_id=...)."""
+    from ghfe import app
+    payload = {
+        "action": "queued",
+        "workflow_job": {"id": 12345, "name": "test", "labels": ["ubuntu-24.04-riscv"],
+                         "html_url": "https://example.com"},
+        "repository": {"id": 100, "full_name": "o/r",
+                       "owner": {"id": 152654596, "login": "o", "type": "Organization"}},
+        "installation": {"id": 999},
+    }
+    body = json.dumps(payload)
+    with app.test_client() as client:
+        resp = _post_webhook(client, body, "workflow_job")
+        assert resp.status_code == 200
+    kwargs = _last_log_call(_mock_add_installation_event)
+    assert kwargs["app_id"] == 2167633  # from X-GitHub-Hook-Installation-Target-Id
+
+
+@patch("db.add_job", return_value=True)
+def test_webhook_logs_after_jobs_commit_even_when_log_raises(mock_add_job, _mock_add_installation_event):
+    """If add_installation_event raises, the side-effect (add_job) was already
+    called and committed in its own transaction. The webhook returns 500 and
+    GitHub retries; on retry add_job is a no-op via ON CONFLICT job_id."""
+    from ghfe import app
+    _mock_add_installation_event.side_effect = RuntimeError("DB hiccup")
+
+    payload = {
+        "action": "queued",
+        "workflow_job": {"id": 12345, "name": "test", "labels": ["ubuntu-24.04-riscv"],
+                         "html_url": "https://example.com"},
+        "repository": {"id": 100, "full_name": "o/r",
+                       "owner": {"id": 152654596, "login": "o", "type": "Organization"}},
+        "installation": {"id": 999},
+    }
+    body = json.dumps(payload)
+    with app.test_client() as client:
+        resp = _post_webhook(client, body, "workflow_job")
+        assert resp.status_code == 500
+    mock_add_job.assert_called_once()
+
+
+# --- /trace endpoints ---
+
+def _trace_get(client, path, token=TRACE_API_TOKEN):
+    headers = {"Authorization": f"Bearer {token}"} if token is not None else {}
+    return client.get(path, headers=headers)
+
+
+def test_trace_entity_requires_bearer_token(_mock_add_installation_event):
+    from ghfe import app
+    with app.test_client() as client:
+        resp = client.get("/trace/entity/123")
+        assert resp.status_code == 401
+        resp = _trace_get(client, "/trace/entity/123", token="wrong")
+        assert resp.status_code == 401
+
+
+@patch("db.get_events_by_entity_id", return_value=[{"id": 1, "event": "installation.created"}])
+def test_trace_entity_returns_events(mock_get, _mock_add_installation_event):
+    from ghfe import app
+    with app.test_client() as client:
+        resp = _trace_get(client, "/trace/entity/152654596")
+        assert resp.status_code == 200
+        assert resp.headers["Content-Type"] == "application/json"
+        data = json.loads(resp.data)
+        assert data == {"events": [{"id": 1, "event": "installation.created"}]}
+    mock_get.assert_called_once_with(152654596)
+
+
+@patch("db.get_events_by_entity_id", return_value=[{"id": 1}])
+@patch("db.get_entity_id_for_installation", return_value=152654596)
+def test_trace_installation_translates_to_entity(mock_get_eid, mock_get_events, _mock_add_installation_event):
+    from ghfe import app
+    with app.test_client() as client:
+        resp = _trace_get(client, "/trace/installation/999")
+        assert resp.status_code == 200
+    mock_get_eid.assert_called_once_with(999)
+    mock_get_events.assert_called_once_with(152654596)
+
+
+@patch("db.get_entity_id_for_installation", return_value=None)
+def test_trace_installation_unknown_returns_empty(mock_get_eid, _mock_add_installation_event):
+    from ghfe import app
+    with app.test_client() as client:
+        resp = _trace_get(client, "/trace/installation/999")
+        assert resp.status_code == 200
+        assert json.loads(resp.data) == {"events": []}
+
+
+@patch("db.get_entity_id_for_job", return_value=None)
+def test_trace_job_unknown_returns_empty(mock_get_eid, _mock_add_installation_event):
+    from ghfe import app
+    with app.test_client() as client:
+        resp = _trace_get(client, "/trace/job/12345")
+        assert resp.status_code == 200
+        assert json.loads(resp.data) == {"events": []}
+
+
+@patch("db.get_events_by_entity_id", return_value=[{"id": 1}])
+@patch("db.get_entity_id_for_job", return_value=152654596)
+def test_trace_job_uses_one_hop_lookup(mock_get_eid, mock_get_events, _mock_add_installation_event):
+    """job_id -> entity_id direct via jobs.entity_id (one query)."""
+    from ghfe import app
+    with app.test_client() as client:
+        resp = _trace_get(client, "/trace/job/12345")
+        assert resp.status_code == 200
+    mock_get_eid.assert_called_once_with(12345)
+    mock_get_events.assert_called_once_with(152654596)
+
+
+@patch("db.get_payload_by_id", return_value={"action": "created", "installation": {"id": 999}})
+def test_trace_payload_returns_payload_only(mock_get_payload, _mock_add_installation_event):
+    from ghfe import app
+    with app.test_client() as client:
+        resp = _trace_get(client, "/trace/payload/42")
+        assert resp.status_code == 200
+        data = json.loads(resp.data)
+        assert set(data.keys()) == {"payload"}
+        assert data["payload"] == {"action": "created", "installation": {"id": 999}}
+    mock_get_payload.assert_called_once_with(42)
+
+
+@patch("db.get_payload_by_id", return_value=None)
+def test_trace_payload_not_found(mock_get_payload, _mock_add_installation_event):
+    from ghfe import app
+    with app.test_client() as client:
+        resp = _trace_get(client, "/trace/payload/42")
+        assert resp.status_code == 404
