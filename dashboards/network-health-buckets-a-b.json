@@ -113,7 +113,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "rate(node_softirqs_total{type=\"NET_RX\",node=~\"$node\"}[1m])",
+                      "expr": "rate(node_softirqs_functions_total{type=\"NET_RX\",node=~\"$node\"}[1m])",
                       "legendFormat": "{{node}} cpu={{cpu}}",
                       "range": true
                     },
@@ -180,8 +180,8 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "rate(node_interrupts_total{type=~\".*end0.*\",node=~\"$node\"}[1m])",
-                      "legendFormat": "{{node}} cpu={{cpu}} type={{type}}",
+                      "expr": "rate(node_interrupts_total{devices=~\".*end0.*\",node=~\"$node\"}[1m])",
+                      "legendFormat": "{{node}} cpu={{cpu}} dev={{devices}} irq={{type}}",
                       "range": true
                     },
                     "version": "v0"
