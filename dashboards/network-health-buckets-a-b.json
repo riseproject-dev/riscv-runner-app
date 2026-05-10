@@ -113,7 +113,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "rate(node_softirq_total{type=\"NET_RX\",node=~\"$node\"}[1m])",
+                      "expr": "rate(node_softirqs_total{type=\"NET_RX\",node=~\"$node\"}[1m])",
                       "legendFormat": "{{node}} cpu={{cpu}}",
                       "range": true
                     },
