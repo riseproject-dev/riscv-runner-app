@@ -1247,6 +1247,73 @@
           "version": "13.0.1"
         }
       }
+    },
+    "panel-17": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": { "name": "fflnugavx2h34c" },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "editorMode": "code",
+                      "expr": "rate(node_softirqs_functions_total{type=\"NET_TX\",node=~\"$node\"}[1m])",
+                      "legendFormat": "{{node}} cpu={{cpu}}",
+                      "range": true
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "rate(node_softirqs_functions_total{type=\"NET_TX\"}). TX-side softirq pressure per CPU; pair with the NET_RX panel for the full softirq picture on the link.",
+        "id": 17,
+        "links": [],
+        "title": "H10: NET_TX softirq deliveries/sec per CPU",
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": { "mode": "palette-classic" },
+                "custom": {
+                  "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto",
+                  "barAlignment": 0, "barWidthFactor": 0.6, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none",
+                  "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+                  "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5,
+                  "scaleDistribution": { "type": "linear" },
+                  "showPoints": "auto", "showValues": false, "spanNulls": false,
+                  "stacking": { "group": "A", "mode": "none" },
+                  "thresholdsStyle": { "mode": "off" }
+                },
+                "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": 0 } ] },
+                "unit": "ops"
+              },
+              "overrides": []
+            },
+            "options": {
+              "annotations": { "clustering": -1, "multiLane": false },
+              "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+              "tooltip": { "hideZeros": false, "mode": "multi", "sort": "none" }
+            }
+          },
+          "version": "13.0.1"
+        }
+      }
     }
   },
   "layout": {
@@ -1342,6 +1409,7 @@
                 "items": [
                   { "kind": "AutoGridLayoutItem", "spec": { "element": { "kind": "ElementReference", "name": "panel-1" } } },
                   { "kind": "AutoGridLayoutItem", "spec": { "element": { "kind": "ElementReference", "name": "panel-2" } } },
+                  { "kind": "AutoGridLayoutItem", "spec": { "element": { "kind": "ElementReference", "name": "panel-17" } } },
                   { "kind": "AutoGridLayoutItem", "spec": { "element": { "kind": "ElementReference", "name": "panel-3" } } }
                 ],
                 "maxColumnCount": 3,
