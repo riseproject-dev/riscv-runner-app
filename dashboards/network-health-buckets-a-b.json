@@ -731,7 +731,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "rate(node_ethtool_irq_tx_path_in_lpi_mode_n{device=\"end0\",node=~\"$node\"}[1m])",
+                      "expr": "rate(node_ethtool_irq_transmitted_path_in_lpi_mode_n{device=\"end0\",node=~\"$node\"}[1m])",
                       "legendFormat": "{{node}}",
                       "range": true
                     },
