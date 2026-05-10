@@ -865,6 +865,222 @@ sudo systemctl daemon-reload
 sudo systemctl enable prometheus-agent
 
 ###############################################################################
+## Install probe scripts (textfile collector)
+
+# Two scripts cover the metrics in the debugging plan that no built-in
+# node_exporter collector exposes:
+#   - raw_github_probe.py: end-to-end download timing against
+#     raw.githubusercontent.com plus a non-Fastly comparison target. The
+#     headline metric for the slow-CI investigation.
+#   - dns_probe.py: which Fastly IPs raw.githubusercontent.com is currently
+#     resolving to, so we can correlate slow windows with cache-region flips.
+#
+# Implemented in Python (stdlib only). curl is shelled out for the
+# raw_github probe so we get %{remote_ip} reflecting the IP libcurl
+# actually connected to (matches the customer's traffic path more
+# faithfully than what socket.gethostbyname would tell us).
+
+cat <<'SCRIPT_EOF' | sudo tee /usr/local/bin/raw_github_probe.py >/dev/null
+#!/usr/bin/env python3
+# Synthetic probe: download a fixed test artefact from
+# raw.githubusercontent.com and a non-Fastly comparison target,
+# emit timing metrics for the node_exporter textfile collector.
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+
+OUT = Path("/var/lib/node_exporter/textfile_collector/raw_github_probe.prom")
+
+TARGETS = [
+    # Fastly target: small stable file in the same repo as the customer's
+    # slow downloads (they fetch from usnistgov/ACVP-Server).
+    ("raw.githubusercontent.com",
+     "https://raw.githubusercontent.com/usnistgov/ACVP-Server/master/README.md"),
+    # Non-Fastly comparison: Cloudflare's well-known speed-test endpoint.
+    # When the Fastly target sags but this stays flat, the issue is on the
+    # Scaleway-Fastly path (H9), not Scaleway WAN egress in general (H5).
+    ("cloudflare-control",
+     "https://speed.cloudflare.com/__down?bytes=1048576"),
+]
+
+
+def probe(target: str, url: str) -> list[str]:
+    try:
+        result = subprocess.run(
+            [
+                "curl", "-o", "/dev/null", "-s", "--max-time", "30",
+                "-w", "%{time_total} %{speed_download} %{remote_ip} %{exitcode}\n",
+                url,
+            ],
+            capture_output=True, text=True, timeout=35,
+        )
+        fields = (result.stdout.strip() or "0 0 unknown 99").split()
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        fields = ["0", "0", "unknown", "99"]
+    fields = (fields + ["0", "0", "unknown", "99"])[:4]
+    time_total, speed, remote_ip, exit_code = fields
+    return [
+        f'raw_github_probe_seconds{{target="{target}",remote_ip="{remote_ip}"}} {time_total}',
+        f'raw_github_probe_bytes_per_second{{target="{target}"}} {speed}',
+        f'raw_github_probe_curl_exit_code{{target="{target}"}} {exit_code}',
+    ]
+
+
+def main() -> None:
+    lines = [
+        "# HELP raw_github_probe_seconds Wallclock to download a fixed test artefact.",
+        "# TYPE raw_github_probe_seconds gauge",
+        "# HELP raw_github_probe_bytes_per_second Average download throughput in bytes/sec.",
+        "# TYPE raw_github_probe_bytes_per_second gauge",
+        "# HELP raw_github_probe_curl_exit_code Curl exit code; 0 on success.",
+        "# TYPE raw_github_probe_curl_exit_code gauge",
+    ]
+    for target, url in TARGETS:
+        lines.extend(probe(target, url))
+
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(OUT.parent), prefix=".raw_github_probe.")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        os.replace(tmp, OUT)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+if __name__ == "__main__":
+    main()
+SCRIPT_EOF
+sudo chmod 0755 /usr/local/bin/raw_github_probe.py
+sudo chown root:root /usr/local/bin/raw_github_probe.py
+
+cat <<'SCRIPT_EOF' | sudo tee /usr/local/bin/dns_probe.py >/dev/null
+#!/usr/bin/env python3
+# DNS resolution snapshot for raw.githubusercontent.com — emit info-style
+# metrics so we can see which Fastly IPs each node sees over time.
+#
+# Resolves via socket.getaddrinfo, which uses the same resolver libc
+# would use, so the IPs we record are the same ones curl/the runner
+# agent would actually connect to.
+import os
+import socket
+import tempfile
+from pathlib import Path
+
+OUT = Path("/var/lib/node_exporter/textfile_collector/dns_probe.prom")
+HOST = "raw.githubusercontent.com"
+
+
+def resolve(host: str) -> list[str]:
+    ips: set[str] = set()
+    for family in (socket.AF_INET, socket.AF_INET6):
+        try:
+            for info in socket.getaddrinfo(host, None, family, socket.SOCK_STREAM):
+                ips.add(info[4][0])
+        except socket.gaierror:
+            pass
+    return sorted(ips)
+
+
+def main() -> None:
+    ips = resolve(HOST)
+    lines = [
+        "# HELP runner_dns_resolved_ip Info metric: 1 per IP currently resolved for HOST.",
+        "# TYPE runner_dns_resolved_ip gauge",
+        "# HELP runner_dns_resolved_ip_count Number of IPs returned for HOST.",
+        "# TYPE runner_dns_resolved_ip_count gauge",
+    ]
+    for ip in ips:
+        lines.append(f'runner_dns_resolved_ip{{host="{HOST}",ip="{ip}"}} 1')
+    lines.append(f'runner_dns_resolved_ip_count{{host="{HOST}"}} {len(ips)}')
+
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(OUT.parent), prefix=".dns_probe.")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        os.replace(tmp, OUT)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+if __name__ == "__main__":
+    main()
+SCRIPT_EOF
+sudo chmod 0755 /usr/local/bin/dns_probe.py
+sudo chown root:root /usr/local/bin/dns_probe.py
+
+# Systemd timers running each probe as the node_exporter user.
+cat <<'EOF' | sudo tee /etc/systemd/system/raw-github-probe.service
+[Unit]
+Description=Synthetic probe of raw.githubusercontent.com and a comparison target
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+User=node_exporter
+Group=node_exporter
+ExecStart=/usr/local/bin/raw_github_probe.py
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/node_exporter
+EOF
+
+cat <<'EOF' | sudo tee /etc/systemd/system/raw-github-probe.timer
+[Unit]
+Description=Run raw-github-probe every 5 minutes
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+Unit=raw-github-probe.service
+[Install]
+WantedBy=timers.target
+EOF
+
+cat <<'EOF' | sudo tee /etc/systemd/system/dns-probe.service
+[Unit]
+Description=DNS resolution snapshot for raw.githubusercontent.com
+After=network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+User=node_exporter
+Group=node_exporter
+ExecStart=/usr/local/bin/dns_probe.py
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/node_exporter
+EOF
+
+cat <<'EOF' | sudo tee /etc/systemd/system/dns-probe.timer
+[Unit]
+Description=Run dns-probe every 60 seconds
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=60s
+Unit=dns-probe.service
+[Install]
+WantedBy=timers.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable raw-github-probe.timer
+sudo systemctl enable dns-probe.timer
+
+###############################################################################
 ## Install containerd
 
 sudo apt-get install -y --no-install-recommends containerd
