@@ -38,7 +38,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "rate(node_cpu_seconds_total{mode=\"softirq\"}[1m])",
+                      "expr": "rate(node_cpu_seconds_total{mode=\"softirq\",node=~\"$node\"}[1m])",
                       "legendFormat": "{{node}} cpu={{cpu}}",
                       "range": true
                     },
@@ -73,8 +73,8 @@
                   "stacking": { "group": "A", "mode": "none" },
                   "thresholdsStyle": { "mode": "line" }
                 },
-                "min": 0,
                 "max": 1,
+                "min": 0,
                 "thresholds": {
                   "mode": "absolute",
                   "steps": [
@@ -113,7 +113,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "rate(node_softirq_total{type=\"NET_RX\"}[1m])",
+                      "expr": "rate(node_softirq_total{type=\"NET_RX\",node=~\"$node\"}[1m])",
                       "legendFormat": "{{node}} cpu={{cpu}}",
                       "range": true
                     },
@@ -180,7 +180,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "rate(node_interrupts_total{type=~\".*end0.*\"}[1m])",
+                      "expr": "rate(node_interrupts_total{type=~\".*end0.*\",node=~\"$node\"}[1m])",
                       "legendFormat": "{{node}} cpu={{cpu}} type={{type}}",
                       "range": true
                     },
@@ -247,7 +247,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "rate(node_netstat_TcpExt_TCPTimeouts[5m])",
+                      "expr": "rate(node_netstat_TcpExt_TCPTimeouts{node=~\"$node\"}[5m])",
                       "legendFormat": "{{node}}",
                       "range": true
                     },
@@ -315,7 +315,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "rate(node_netstat_Tcp_RetransSegs[5m]) / clamp_min(rate(node_netstat_Tcp_OutSegs[5m]), 1)",
+                      "expr": "rate(node_netstat_Tcp_RetransSegs{node=~\"$node\"}[5m]) / clamp_min(rate(node_netstat_Tcp_OutSegs{node=~\"$node\"}[5m]), 1)",
                       "legendFormat": "{{node}}",
                       "range": true
                     },
@@ -389,7 +389,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "rate(node_netstat_TcpExt_TCPLostRetransmit[5m])",
+                      "expr": "rate(node_netstat_TcpExt_TCPLostRetransmit{node=~\"$node\"}[5m])",
                       "legendFormat": "{{node}} lost-retransmit",
                       "range": true
                     },
@@ -408,7 +408,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "rate(node_netstat_TcpExt_TCPSpuriousRTOs[5m])",
+                      "expr": "rate(node_netstat_TcpExt_TCPSpuriousRTOs{node=~\"$node\"}[5m])",
                       "legendFormat": "{{node}} spurious-rto",
                       "range": true
                     },
@@ -476,7 +476,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "rate(node_network_receive_bytes_total{device=\"end0\"}[1m]) * 8 / 1e6",
+                      "expr": "rate(node_network_receive_bytes_total{device=\"end0\",node=~\"$node\"}[1m]) * 8 / 1e6",
                       "legendFormat": "{{node}} rx",
                       "range": true
                     },
@@ -495,7 +495,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "rate(node_network_transmit_bytes_total{device=\"end0\"}[1m]) * 8 / 1e6",
+                      "expr": "rate(node_network_transmit_bytes_total{device=\"end0\",node=~\"$node\"}[1m]) * 8 / 1e6",
                       "legendFormat": "{{node}} tx",
                       "range": true
                     },
@@ -569,7 +569,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "rate(node_network_receive_drop_total{device=\"end0\"}[5m])",
+                      "expr": "rate(node_network_receive_drop_total{device=\"end0\",node=~\"$node\"}[5m])",
                       "legendFormat": "{{node}} rx-drop",
                       "range": true
                     },
@@ -588,7 +588,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "rate(node_network_receive_errs_total{device=\"end0\"}[5m])",
+                      "expr": "rate(node_network_receive_errs_total{device=\"end0\",node=~\"$node\"}[5m])",
                       "legendFormat": "{{node}} rx-errs",
                       "range": true
                     },
@@ -602,10 +602,10 @@
             "transformations": []
           }
         },
-        "description": "rate(node_network_receive_{drop,errs}_total{device=\"end0\"}). Should stay flat at 0; any climb reopens H2.",
+        "description": "rate(node_network_receive_{drop,errs}_total{device=\"end0\"}). Should stay flat at 0; any climb on the receive path reopens H2.",
         "id": 8,
         "links": [],
-        "title": "Sentinel: end0 NIC drops & errors (H2)",
+        "title": "Sentinel: end0 RX drops & errors (H2)",
         "vizConfig": {
           "group": "timeseries",
           "kind": "VizConfig",
@@ -656,7 +656,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "node_nf_conntrack_entries / node_nf_conntrack_entries_limit",
+                      "expr": "node_nf_conntrack_entries{node=~\"$node\"} / node_nf_conntrack_entries_limit{node=~\"$node\"}",
                       "legendFormat": "{{node}}",
                       "range": true
                     },
@@ -691,8 +691,8 @@
                   "stacking": { "group": "A", "mode": "none" },
                   "thresholdsStyle": { "mode": "line" }
                 },
-                "min": 0,
                 "max": 1,
+                "min": 0,
                 "thresholds": {
                   "mode": "absolute",
                   "steps": [
@@ -731,7 +731,7 @@
                     "kind": "DataQuery",
                     "spec": {
                       "editorMode": "code",
-                      "expr": "rate(node_ethtool_irq_tx_path_in_lpi_mode_n{device=\"end0\"}[1m])",
+                      "expr": "rate(node_ethtool_irq_tx_path_in_lpi_mode_n{device=\"end0\",node=~\"$node\"}[1m])",
                       "legendFormat": "{{node}}",
                       "range": true
                     },
@@ -781,6 +781,93 @@
           "version": "13.0.1"
         }
       }
+    },
+    "panel-11": {
+      "kind": "Panel",
+      "spec": {
+        "data": {
+          "kind": "QueryGroup",
+          "spec": {
+            "queries": [
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": { "name": "fflnugavx2h34c" },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "editorMode": "code",
+                      "expr": "rate(node_network_transmit_drop_total{device=\"end0\",node=~\"$node\"}[5m])",
+                      "legendFormat": "{{node}} tx-drop",
+                      "range": true
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "A"
+                }
+              },
+              {
+                "kind": "PanelQuery",
+                "spec": {
+                  "hidden": false,
+                  "query": {
+                    "datasource": { "name": "fflnugavx2h34c" },
+                    "group": "prometheus",
+                    "kind": "DataQuery",
+                    "spec": {
+                      "editorMode": "code",
+                      "expr": "rate(node_network_transmit_errs_total{device=\"end0\",node=~\"$node\"}[5m])",
+                      "legendFormat": "{{node}} tx-errs",
+                      "range": true
+                    },
+                    "version": "v0"
+                  },
+                  "refId": "B"
+                }
+              }
+            ],
+            "queryOptions": {},
+            "transformations": []
+          }
+        },
+        "description": "rate(node_network_transmit_{drop,errs}_total{device=\"end0\"}). Should stay flat at 0; any climb on the transmit path means egress trouble.",
+        "id": 11,
+        "links": [],
+        "title": "Sentinel: end0 TX drops & errors",
+        "vizConfig": {
+          "group": "timeseries",
+          "kind": "VizConfig",
+          "spec": {
+            "fieldConfig": {
+              "defaults": {
+                "color": { "mode": "palette-classic" },
+                "custom": {
+                  "axisBorderShow": false, "axisCenteredZero": false, "axisColorMode": "text", "axisLabel": "", "axisPlacement": "auto",
+                  "barAlignment": 0, "barWidthFactor": 0.6, "drawStyle": "line", "fillOpacity": 10, "gradientMode": "none",
+                  "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+                  "insertNulls": false, "lineInterpolation": "linear", "lineWidth": 1, "pointSize": 5,
+                  "scaleDistribution": { "type": "linear" },
+                  "showPoints": "auto", "showValues": false, "spanNulls": false,
+                  "stacking": { "group": "A", "mode": "none" },
+                  "thresholdsStyle": { "mode": "off" }
+                },
+                "min": 0,
+                "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": 0 } ] },
+                "unit": "ops"
+              },
+              "overrides": []
+            },
+            "options": {
+              "annotations": { "clustering": -1, "multiLane": false },
+              "legend": { "calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+              "tooltip": { "hideZeros": false, "mode": "multi", "sort": "none" }
+            }
+          },
+          "version": "13.0.1"
+        }
+      }
     }
   },
   "layout": {
@@ -796,6 +883,7 @@
         { "kind": "AutoGridLayoutItem", "spec": { "element": { "kind": "ElementReference", "name": "panel-6" } } },
         { "kind": "AutoGridLayoutItem", "spec": { "element": { "kind": "ElementReference", "name": "panel-7" } } },
         { "kind": "AutoGridLayoutItem", "spec": { "element": { "kind": "ElementReference", "name": "panel-8" } } },
+        { "kind": "AutoGridLayoutItem", "spec": { "element": { "kind": "ElementReference", "name": "panel-11" } } },
         { "kind": "AutoGridLayoutItem", "spec": { "element": { "kind": "ElementReference", "name": "panel-9" } } },
         { "kind": "AutoGridLayoutItem", "spec": { "element": { "kind": "ElementReference", "name": "panel-10" } } }
       ],
@@ -823,5 +911,36 @@
     "to": "now"
   },
   "title": "RISE RISC-V runner — network health (Buckets A+B)",
-  "variables": []
+  "variables": [
+    {
+      "kind": "QueryVariable",
+      "spec": {
+        "allowCustomValue": false,
+        "current": { "text": ["$__all"], "value": ["$__all"] },
+        "definition": "label_values(node)",
+        "hide": "dontHide",
+        "includeAll": true,
+        "label": "Node",
+        "multi": true,
+        "name": "node",
+        "options": [],
+        "query": {
+          "datasource": { "name": "fflnugavx2h34c" },
+          "group": "prometheus",
+          "kind": "DataQuery",
+          "spec": {
+            "qryType": 1,
+            "query": "label_values(node)",
+            "refId": "PrometheusVariableQueryEditor-VariableQuery"
+          },
+          "version": "v0"
+        },
+        "refresh": "onDashboardLoad",
+        "regex": "",
+        "regexApplyTo": "value",
+        "skipUrlSync": false,
+        "sort": "alphabeticalAsc"
+      }
+    }
+  ]
 }
