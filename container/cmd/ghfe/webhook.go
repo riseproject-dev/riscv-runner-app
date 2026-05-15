@@ -174,16 +174,26 @@ func (a *App) handleWorkflowJobEvent(w http.ResponseWriter, r *http.Request, bod
 	ownerLogin, _ := owner["login"].(string)
 	installID := asInt64(install["id"])
 	repoFullName, _ := repo["full_name"].(string)
-	entity := internal.Entity{Type: internal.EntityType(ownerType), Name: ownerLogin, ID: ownerID}
+	if ownerID == 0 {
+		httpError(w, 400, "Owner ID is missing in payload")
+		return
+	}
+	et, err := internal.ParseEntityType(ownerType)
+	if err != nil {
+		httpError(w, 400, err.Error())
+		return
+	}
+	entity := internal.Entity{Type: et, Name: ownerLogin, ID: ownerID}
+	entityTypeStr := string(entity.Type)
 
 	trimmed := trimWorkflowJobPayload(payload)
 	base := eventRecord{
 		Payload:        trimmed,
 		AppID:          &appID,
 		InstallationID: &installID,
-		EntityType:     &ownerType,
-		EntityID:       &ownerID,
-		EntityName:     &ownerLogin,
+		EntityType:     &entityTypeStr,
+		EntityID:       &entity.ID,
+		EntityName:     &entity.Name,
 	}
 
 	// Staging proxy: a real repo (e.g. riscv-runner-sample) is wired into
@@ -207,15 +217,6 @@ func (a *App) handleWorkflowJobEvent(w http.ResponseWriter, r *http.Request, bod
 		a.recordEvent(r, base)
 		slog.Debug("Ignoring action", "action", action)
 		_, _ = w.Write([]byte("Ignoring action: " + action))
-		return
-	}
-
-	if ownerID == 0 {
-		httpError(w, 400, "Owner ID is missing in payload")
-		return
-	}
-	if _, err := internal.ParseEntityType(ownerType); err != nil {
-		httpError(w, 400, err.Error())
 		return
 	}
 
