@@ -184,14 +184,13 @@ func (a *App) handleWorkflowJobEvent(w http.ResponseWriter, r *http.Request, bod
 		return
 	}
 	entity := internal.Entity{Type: et, Name: ownerLogin, ID: ownerID}
-	entityTypeStr := string(entity.Type)
 
 	trimmed := trimWorkflowJobPayload(payload)
 	base := eventRecord{
 		Payload:        trimmed,
 		AppID:          &appID,
 		InstallationID: &installID,
-		EntityType:     &entityTypeStr,
+		EntityType:     (*string)(&entity.Type),
 		EntityID:       &entity.ID,
 		EntityName:     &entity.Name,
 	}
